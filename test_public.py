@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,6 +40,45 @@ class StoryGraphTests(unittest.TestCase):
         planned_again, added_again = plan_story_unlock(planned, graphs, "n1302")
         self.assertEqual(added_again, [])
         self.assertEqual(planned_again, planned)
+
+
+class SteamHelperTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is unavailable")
+    def test_cloud_bridge_passes_utf8_string_and_reads_it_back(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rogd-steam-helper-test-") as temporary:
+            root = Path(temporary)
+            module_dir = root / "resources" / "app" / "node_modules" / "steamworks.js"
+            module_dir.mkdir(parents=True)
+            (module_dir / "index.js").write_text(
+                "let stored = ''; module.exports.init = () => ({ cloud: {"
+                "writeFile: (_name, value) => { if (typeof value !== 'string') "
+                "throw new Error('expected string'); stored = value; return true; },"
+                "readFile: () => stored } });",
+                encoding="utf-8",
+            )
+            save_path = root / "archive.save"
+            save_path.write_text(json.dumps({"测试": "云存档"}, ensure_ascii=False), encoding="utf-8")
+            environment = os.environ.copy()
+            environment["ROGD_GAME_DIR"] = str(root)
+            result = subprocess.run(
+                [
+                    "node",
+                    str(Path(__file__).resolve().parent / "steam_helper.js"),
+                    "cloud-write",
+                    "archive.save",
+                    str(save_path),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=environment,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            payload_line = next(line for line in result.stdout.splitlines() if line.startswith("ROGD_RESULT="))
+            payload = json.loads(payload_line.removeprefix("ROGD_RESULT="))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["size"], len(save_path.read_bytes()))
 
 
 if __name__ == "__main__":

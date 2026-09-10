@@ -48,9 +48,12 @@ try {
       throw new Error(`不允许写入的 Cloud 文件：${remoteName}`);
     }
     const source = fs.readFileSync(localPath);
-    const wrote = client.cloud.writeFile(remoteName, source);
+    // steamworks.js 0.3.x binds RemoteStorage::writeFile as (name, string).
+    // Passing a Buffer reaches the Rust bridge as a JS object and is rejected.
+    const sourceText = source.toString('utf8');
+    const wrote = client.cloud.writeFile(remoteName, sourceText);
     if (wrote === false) throw new Error('Steam Cloud writeFile 返回 false');
-    const readBack = Buffer.from(client.cloud.readFile(remoteName));
+    const readBack = Buffer.from(client.cloud.readFile(remoteName), 'utf8');
     const expected = sha256(source);
     const actual = sha256(readBack);
     finish({ ok: expected === actual, name: remoteName, size: readBack.length, sha256: actual,
@@ -59,5 +62,5 @@ try {
 
   throw new Error(`未知命令：${command || '(empty)'}`);
 } catch (error) {
-  finish({ ok: false, error: String(error && error.stack || error) }, 1);
+  finish({ ok: false, error: String(error && error.message || error) }, 1);
 }

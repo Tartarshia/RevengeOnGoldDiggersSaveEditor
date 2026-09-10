@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from rogd_model import atomic_write, encode_json, load_json, sha256_bytes, validate_archive, validate_setting
-from story_graph import all_story_nodes, load_story_graphs, plan_story_unlock
+from story_graph import all_story_nodes, load_story_graphs, plan_chapter_unlock, plan_story_unlock
 
 
 class SaveModelTests(unittest.TestCase):
@@ -38,6 +38,25 @@ class StoryGraphTests(unittest.TestCase):
         self.assertTrue({"n1123a1", "n1230a1", "n1301", "n1302"}.issubset(planned["nodeMap"]))
         self.assertEqual(planned["currentNode"], "preserve-me")
         planned_again, added_again = plan_story_unlock(planned, graphs, "n1302")
+        self.assertEqual(added_again, [])
+        self.assertEqual(planned_again, planned)
+
+    def test_chapter_unlock_adds_every_node_and_is_idempotent(self) -> None:
+        graphs = load_story_graphs()
+        archive = {
+            "majorMap": {},
+            "nodeMap": {},
+            "currentNode": "preserve-me",
+            "currentRoute": {"nodes": ["preserve-route"]},
+        }
+        planned, added = plan_chapter_unlock(archive, graphs, "2")
+        chapter_ids = {node["id"] for node in graphs["2"]["nodes"]}
+        self.assertTrue(chapter_ids.issubset(planned["nodeMap"]))
+        self.assertEqual(len(chapter_ids), 83)
+        self.assertEqual(len(added), len(set(added)))
+        self.assertEqual(planned["currentNode"], "preserve-me")
+        self.assertEqual(planned["currentRoute"], {"nodes": ["preserve-route"]})
+        planned_again, added_again = plan_chapter_unlock(planned, graphs, "2")
         self.assertEqual(added_again, [])
         self.assertEqual(planned_again, planned)
 

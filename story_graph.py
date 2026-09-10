@@ -155,3 +155,25 @@ def plan_story_unlock(
 
     validate_archive(updated)
     return updated, added
+
+
+def plan_chapter_unlock(
+    archive: dict[str, Any],
+    graphs: dict[str, dict[str, Any]],
+    chapter: str,
+) -> tuple[dict[str, Any], list[str]]:
+    validate_archive(archive)
+    if chapter not in graphs:
+        raise EditorError(f"未知章节：{chapter}")
+
+    updated = copy.deepcopy(archive)
+    added: list[str] = []
+    for node in graphs[chapter]["nodes"]:
+        node_id = node["id"]
+        if node_id in updated["nodeMap"]:
+            continue
+        updated, newly_added = plan_story_unlock(updated, graphs, node_id)
+        added.extend(newly_added)
+
+    validate_archive(updated)
+    return updated, added

@@ -23,7 +23,7 @@ from rogd_model import (
     validate_setting,
 )
 from steam_schema import Achievement, load_achievements
-from story_graph import all_story_nodes, load_story_graphs, plan_story_unlock
+from story_graph import all_story_nodes, load_story_graphs, plan_chapter_unlock, plan_story_unlock
 
 
 class Editor(tk.Tk):
@@ -133,6 +133,15 @@ class Editor(tk.Tk):
         actions = ttk.Frame(self.route_tab)
         actions.pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="解锁选中剧情节点", command=self.unlock_selected_story_node).pack(side="left")
+        chapter_actions = ttk.Frame(self.route_tab)
+        chapter_actions.pack(fill="x", pady=(6, 0))
+        ttk.Label(chapter_actions, text="整章回收：").pack(side="left")
+        for chapter in map(str, range(1, 8)):
+            ttk.Button(
+                chapter_actions,
+                text=f"第 {chapter} 章 100%",
+                command=lambda selected=chapter: self.unlock_chapter(selected),
+            ).pack(side="left", padx=(0, 5))
 
     def _build_log_tab(self):
         self.log_text = tk.Text(self.log_tab, wrap="word", state="disabled")
@@ -280,6 +289,61 @@ class Editor(tk.Tk):
         except Exception as exc:
             self.log(f"剧情路线写入失败：{exc}")
             messagebox.showerror("写入失败", str(exc), parent=self)
+
+    def unlock_chapter(self, chapter: str) -> None:
+        chapter_nodes = self.story_graphs[chapter]["nodes"]
+        chapter_ids = {node["id"] for node in chapter_nodes}
+        chapter_missing = chapter_ids.difference(self.archive["nodeMap"])
+        if not chapter_missing:
+            messagebox.showinfo("已经完成", f"第 {chapter} 章已经是 100%。", parent=self)
+            return
+        if is_game_running():
+            messagebox.showerror("请关闭游戏", "请先完全关闭游戏，再修改剧情路线。", parent=self)
+            return
+        try:
+            updated, added = plan_chapter_unlock(self.archive, self.story_graphs, chapter)
+        except Exception as exc:
+            messagebox.showerror("无法规划整章路线", str(exc), parent=self)
+            return
+        prerequisite_count = len(added) - len(chapter_missing)
+        prerequisite_text = (
+            f"另补 {prerequisite_count} 个前章路径节点。\n" if prerequisite_count else ""
+        )
+        prompt = (
+            f"将第 {chapter} 章回收至 100%？\n\n"
+            f"本章共 {len(chapter_nodes)} 个节点，当前缺少 {len(chapter_missing)} 个。\n"
+            f"{prerequisite_text}总计新增 {len(added)} 个节点。\n\n"
+            "当前游玩位置和已有分支不会改变；只执行一次备份、写入和 Steam Cloud 校验。\n"
+            "此操作不会自动授予 Steam 成就。"
+        )
+        if not messagebox.askyesno("确认整章回收", prompt, parent=self):
+            return
+        try:
+            backup_dir, digest = save_archive(self.paths, updated)
+            self.archive = load_json(self.paths.archive)
+            validate_archive(self.archive)
+            actual_missing = chapter_ids.difference(self.archive["nodeMap"])
+            if actual_missing:
+                raise EditorError(f"写入复读后，第 {chapter} 章仍缺少 {len(actual_missing)} 个节点。")
+            self.refresh_routes()
+            total = len(all_story_nodes(self.story_graphs))
+            self.summary_var.set(
+                f"剧情路线: {len(self.archive['nodeMap'])}/{total} 节点    "
+                f"角色档案: {len(self.setting['roleProfile'])}    恋情档案: {len(self.setting['loveDrama'])}"
+            )
+            self.log(
+                f"第 {chapter} 章已回收至 100%；新增 {len(added)} 个节点；"
+                f"备份 {backup_dir.name}；SHA-256 {digest[:16]}…"
+            )
+            messagebox.showinfo(
+                "整章写入完成",
+                f"第 {chapter} 章已复读确认 100%，共新增 {len(added)} 个节点。\n"
+                f"备份：{backup_dir}\n\n请启动游戏检查路线图。",
+                parent=self,
+            )
+        except Exception as exc:
+            self.log(f"第 {chapter} 章整章写入失败：{exc}")
+            messagebox.showerror("整章写入失败", str(exc), parent=self)
 
     def selected_achievement(self) -> Achievement | None:
         selection = self.achievement_tree.selection()

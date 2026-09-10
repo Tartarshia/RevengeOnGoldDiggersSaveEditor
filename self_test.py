@@ -8,7 +8,7 @@ from unittest.mock import patch
 import rogd_model
 from rogd_model import SavePaths, atomic_write, encode_json, load_json, save_archive, save_setting, sha256_bytes, validate_setting
 from steam_schema import load_achievements
-from story_graph import load_story_graphs, plan_story_unlock
+from story_graph import load_story_graphs, plan_chapter_unlock, plan_story_unlock
 
 
 def main() -> None:
@@ -66,6 +66,11 @@ def main() -> None:
     planned_again, added_again = plan_story_unlock(planned, graphs, "n1302")
     assert added_again == []
     assert planned_again == planned
+    chapter_planned, chapter_added = plan_chapter_unlock(original_archive, graphs, "2")
+    chapter_ids = {node["id"] for node in graphs["2"]["nodes"]}
+    assert chapter_ids.issubset(chapter_planned["nodeMap"])
+    assert len(chapter_added) == len(set(chapter_added))
+    assert chapter_planned["currentNode"] == "keep-me"
 
     achievements = load_achievements()
     assert len(achievements) == 39, len(achievements)

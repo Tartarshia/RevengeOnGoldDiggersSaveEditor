@@ -166,6 +166,25 @@ class StoryGraphTests(unittest.TestCase):
                 self.assertEqual(archive["currentNode"], "preserve-me")
                 self.assertEqual(archive["currentRoute"], {"nodes": ["preserve-route"]})
 
+    def test_maximum_route_avoids_incomplete_cross_chapter_prerequisite(self) -> None:
+        graphs = load_story_graphs()
+        archive = {
+            "majorMap": {},
+            "nodeMap": {},
+            "currentNode": "preserve-me",
+            "currentRoute": {"nodes": ["preserve-route"]},
+        }
+        for chapter in ("1", "2", "3", "4"):
+            archive, _ = plan_chapter_unlock(archive, graphs, chapter)
+        archive["nodeMap"]["n1440a"].pop("lastNext", None)
+        planned, path, _, _, after = plan_maximum_chapter_relationship_route(
+            archive, graphs, "5"
+        )
+        self.assertNotIn("n1503c", path)
+        self.assertGreater(after, 250)
+        _, satisfied = relationship_requirement_status(planned, graphs, "n1537b")
+        self.assertTrue(satisfied)
+
 
 class SteamHelperTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "Node.js is unavailable")

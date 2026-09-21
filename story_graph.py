@@ -331,6 +331,15 @@ def _requirement_satisfied(
     )
 
 
+def _completed_story_nodes(archive: dict[str, Any]) -> set[str]:
+    """Nodes usable by n.<id> gates, not merely visible on the route map."""
+    return {
+        node_id
+        for node_id, record in archive["nodeMap"].items()
+        if isinstance(record, dict) and bool(record.get("lastNext"))
+    }
+
+
 def relationship_requirement_status(
     archive: dict[str, Any],
     graphs: dict[str, dict[str, Any]],
@@ -343,7 +352,7 @@ def relationship_requirement_status(
     fields = relationship_fields(requirement)
     values = story_route_values(archive, graphs, target, fields)
     return values, target in archive["nodeMap"] and _requirement_satisfied(
-        requirement, values, set(archive["nodeMap"])
+        requirement, values, _completed_story_nodes(archive)
     )
 
 
@@ -479,7 +488,7 @@ def plan_relationship_gate_route(
         fields,
         {tuple(incoming_values[field] for field in fields): []},
     )
-    seen_nodes = set(updated["nodeMap"])
+    seen_nodes = _completed_story_nodes(updated)
     candidates = [
         (values, path)
         for values, path in states.items()
@@ -606,7 +615,7 @@ def _maximum_valid_score_path(
     root, order, adjacency = _topological_graph(graph)
     root_previous = archive["nodeMap"].get(root, {}).get("lastNode", "")
     incoming = story_route_values(archive, graphs, root_previous, fields)
-    seen_nodes = set(archive["nodeMap"])
+    seen_nodes = _completed_story_nodes(archive)
     states: dict[str, dict[tuple[int, ...], list[str]]] = {node_id: {} for node_id in nodes}
 
     def add(values: tuple[int, ...], node_id: str) -> tuple[int, ...]:

@@ -23,7 +23,13 @@ from rogd_model import (
     validate_setting,
 )
 from steam_schema import Achievement, load_achievements
-from story_graph import all_story_nodes, load_story_graphs, plan_chapter_unlock, plan_story_unlock
+from story_graph import (
+    all_story_nodes,
+    chapter_unlock_status,
+    load_story_graphs,
+    plan_chapter_unlock,
+    plan_story_unlock,
+)
 
 
 class Editor(tk.Tk):
@@ -293,9 +299,9 @@ class Editor(tk.Tk):
     def unlock_chapter(self, chapter: str) -> None:
         chapter_nodes = self.story_graphs[chapter]["nodes"]
         chapter_ids = {node["id"] for node in chapter_nodes}
-        chapter_missing = chapter_ids.difference(self.archive["nodeMap"])
-        if not chapter_missing:
-            messagebox.showinfo("已经完成", f"第 {chapter} 章已经是 100%。", parent=self)
+        chapter_missing, unfinished = chapter_unlock_status(self.archive, self.story_graphs, chapter)
+        if not chapter_missing and not unfinished:
+            messagebox.showinfo("已经完成", f"第 {chapter} 章节点及播放历史已经完整。", parent=self)
             return
         if is_game_running():
             messagebox.showerror("请关闭游戏", "请先完全关闭游戏，再修改剧情路线。", parent=self)
@@ -305,14 +311,15 @@ class Editor(tk.Tk):
         except Exception as exc:
             messagebox.showerror("无法规划整章路线", str(exc), parent=self)
             return
-        prerequisite_count = len(added) - len(chapter_missing)
+        prerequisite_count = max(0, len(added) - len(chapter_missing) - len(unfinished))
         prerequisite_text = (
             f"另补 {prerequisite_count} 个前章路径节点。\n" if prerequisite_count else ""
         )
         prompt = (
             f"将第 {chapter} 章回收至 100%？\n\n"
             f"本章共 {len(chapter_nodes)} 个节点，当前缺少 {len(chapter_missing)} 个。\n"
-            f"{prerequisite_text}总计新增 {len(added)} 个节点。\n\n"
+            f"另有 {len(unfinished)} 个节点缺少完整播放记录，将一并修复。\n"
+            f"{prerequisite_text}总计新增或修复 {len(added)} 条节点记录。\n\n"
             "当前游玩位置和已有分支不会改变；只执行一次备份、写入和 Steam Cloud 校验。\n"
             "此操作不会自动授予 Steam 成就。"
         )
@@ -322,9 +329,14 @@ class Editor(tk.Tk):
             backup_dir, digest = save_archive(self.paths, updated)
             self.archive = load_json(self.paths.archive)
             validate_archive(self.archive)
-            actual_missing = chapter_ids.difference(self.archive["nodeMap"])
-            if actual_missing:
-                raise EditorError(f"写入复读后，第 {chapter} 章仍缺少 {len(actual_missing)} 个节点。")
+            actual_missing, actual_unfinished = chapter_unlock_status(
+                self.archive, self.story_graphs, chapter
+            )
+            if actual_missing or actual_unfinished:
+                raise EditorError(
+                    f"写入复读后，第 {chapter} 章仍缺 {len(actual_missing)} 个节点、"
+                    f"{len(actual_unfinished)} 个完整播放记录。"
+                )
             self.refresh_routes()
             total = len(all_story_nodes(self.story_graphs))
             self.summary_var.set(
@@ -332,12 +344,12 @@ class Editor(tk.Tk):
                 f"角色档案: {len(self.setting['roleProfile'])}    恋情档案: {len(self.setting['loveDrama'])}"
             )
             self.log(
-                f"第 {chapter} 章已回收至 100%；新增 {len(added)} 个节点；"
+                f"第 {chapter} 章已回收至 100%；新增或修复 {len(added)} 条节点记录；"
                 f"备份 {backup_dir.name}；SHA-256 {digest[:16]}…"
             )
             messagebox.showinfo(
                 "整章写入完成",
-                f"第 {chapter} 章已复读确认 100%，共新增 {len(added)} 个节点。\n"
+                f"第 {chapter} 章已复读确认 100%，共新增或修复 {len(added)} 条节点记录。\n"
                 f"备份：{backup_dir}\n\n请启动游戏检查路线图。",
                 parent=self,
             )

@@ -9,7 +9,13 @@ import unittest
 from pathlib import Path
 
 from rogd_model import atomic_write, encode_json, load_json, sha256_bytes, validate_archive, validate_setting
-from story_graph import all_story_nodes, load_story_graphs, plan_chapter_unlock, plan_story_unlock
+from story_graph import (
+    all_story_nodes,
+    chapter_unlock_status,
+    load_story_graphs,
+    plan_chapter_unlock,
+    plan_story_unlock,
+)
 
 
 class SaveModelTests(unittest.TestCase):
@@ -56,9 +62,27 @@ class StoryGraphTests(unittest.TestCase):
         self.assertEqual(len(added), len(set(added)))
         self.assertEqual(planned["currentNode"], "preserve-me")
         self.assertEqual(planned["currentRoute"], {"nodes": ["preserve-route"]})
+        missing, unfinished = chapter_unlock_status(planned, graphs, "2")
+        self.assertEqual(missing, set())
+        self.assertEqual(unfinished, set())
         planned_again, added_again = plan_chapter_unlock(planned, graphs, "2")
         self.assertEqual(added_again, [])
         self.assertEqual(planned_again, planned)
+
+    def test_chapter_unlock_repairs_entered_but_unfinished_nodes(self) -> None:
+        graphs = load_story_graphs()
+        archive = {
+            "majorMap": {},
+            "nodeMap": {"n1501": {"id": "n1501", "lastNode": ""}},
+        }
+        missing_before, unfinished_before = chapter_unlock_status(archive, graphs, "5")
+        self.assertIn("n1501", unfinished_before)
+        planned, changed = plan_chapter_unlock(archive, graphs, "5")
+        self.assertIn("n1501", changed)
+        self.assertIn("lastNext", planned["nodeMap"]["n1501"])
+        missing_after, unfinished_after = chapter_unlock_status(planned, graphs, "5")
+        self.assertEqual(missing_after, set())
+        self.assertEqual(unfinished_after, set())
 
 
 class SteamHelperTests(unittest.TestCase):

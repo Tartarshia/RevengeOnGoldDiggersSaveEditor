@@ -167,13 +167,50 @@ def plan_chapter_unlock(
         raise EditorError(f"未知章节：{chapter}")
 
     updated = copy.deepcopy(archive)
-    added: list[str] = []
+    changed: list[str] = []
     for node in graphs[chapter]["nodes"]:
         node_id = node["id"]
         if node_id in updated["nodeMap"]:
             continue
         updated, newly_added = plan_story_unlock(updated, graphs, node_id)
-        added.extend(newly_added)
+        changed.extend(newly_added)
+
+    # A node without lastNext means "entered but not finished" in the game's
+    # archive format.  That raises map completion, but does not unlock the
+    # normal replay/fast-forward behavior.  Complete each non-terminal chapter
+    # record with one valid outgoing edge, without replacing a route the player
+    # actually recorded.
+    outgoing: dict[str, list[str]] = {}
+    for edge in graphs[chapter]["edges"]:
+        outgoing.setdefault(edge["source"], []).append(edge["target"])
+    for node in graphs[chapter]["nodes"]:
+        node_id = node["id"]
+        record = updated["nodeMap"].get(node_id)
+        destinations = outgoing.get(node_id, [])
+        if record is None or not destinations or record.get("lastNext"):
+            continue
+        record["lastNext"] = destinations[0]
+        if node_id not in changed:
+            changed.append(node_id)
 
     validate_archive(updated)
-    return updated, added
+    return updated, changed
+
+
+def chapter_unlock_status(
+    archive: dict[str, Any],
+    graphs: dict[str, dict[str, Any]],
+    chapter: str,
+) -> tuple[set[str], set[str]]:
+    if chapter not in graphs:
+        raise EditorError(f"未知章节：{chapter}")
+    graph = graphs[chapter]
+    chapter_ids = {node["id"] for node in graph["nodes"]}
+    missing = chapter_ids.difference(archive["nodeMap"])
+    nonterminal = {edge["source"] for edge in graph["edges"]}
+    unfinished = {
+        node_id
+        for node_id in chapter_ids.intersection(archive["nodeMap"])
+        if node_id in nonterminal and not archive["nodeMap"][node_id].get("lastNext")
+    }
+    return missing, unfinished

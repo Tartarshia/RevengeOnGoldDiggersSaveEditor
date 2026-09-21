@@ -25,6 +25,16 @@ RELATIONSHIP_CHARACTERS = {
     "yyfb": "何月盈分支标记",
 }
 
+CHAPTER_RELATIONSHIP_DEFAULTS = {
+    "1": ("yl", "陈欣欣"),
+    "2": ("xt", "唐晓甜"),
+    "3": ("xrza", "陈欣如·真爱"),
+    "4": ("sq", "宋诗琪"),
+    "5": ("yy", "何月盈"),
+    "6": ("mn", "潘梦娜"),
+    "7": ("mn", "潘梦娜·终章"),
+}
+
 
 def load_story_graphs(path: Path = STORY_GRAPHS_PATH) -> dict[str, dict[str, Any]]:
     if not path.is_file():
@@ -401,6 +411,7 @@ def _rewrite_selected_route(
     metadata = {node["id"]: node for _, node in all_story_nodes(graphs)}
     node_map = updated["nodeMap"]
     major_map = updated["majorMap"]
+    root_previous = node_map.get(path[0], {}).get("lastNode", "")
     segment_start = 0
     for index, node_id in enumerate(path):
         major_id = metadata[node_id]["majorId"]
@@ -409,7 +420,7 @@ def _rewrite_selected_route(
         next_id = path[index + 1] if index + 1 < len(path) else node_map.get(node_id, {}).get("lastNext", "")
         record: dict[str, Any] = {
             "id": node_id,
-            "lastNode": path[index - 1] if index else "",
+            "lastNode": path[index - 1] if index else root_previous,
             "lastRoute": {"nodes": path[segment_start : index + 1]},
         }
         if next_id:
@@ -453,25 +464,65 @@ def plan_relationship_gate_route(
     if not fields:
         raise EditorError(f"节点 {target} 没有隐藏数值门槛")
 
-    states: dict[tuple[int, ...], list[str]] = {tuple(0 for _ in fields): []}
-    for chapter_number in range(1, int(target_chapter) + 1):
-        chapter = str(chapter_number)
-        goal = target if chapter == target_chapter else _chapter_completion(graphs[chapter])
-        states = _paths_to_goal(graphs[chapter], goal, fields, states)
-    seen_nodes = {node["id"] for chapter in range(1, int(target_chapter) + 1) for node in graphs[str(chapter)]["nodes"]}
+    # Never rewrite earlier chapters to satisfy a later gate. The game keeps
+    # additional private playback indexes alongside these records and rejects
+    # a syntactically valid archive if old chapter choices are replaced en
+    # masse. Only the selected chapter may be rebuilt here.
+    updated, _ = plan_chapter_unlock(archive, graphs, target_chapter)
+    graph = graphs[target_chapter]
+    root, _, _ = _topological_graph(graph)
+    root_previous = updated["nodeMap"].get(root, {}).get("lastNode", "")
+    incoming_values = story_route_values(updated, graphs, root_previous, fields)
+    states = _paths_to_goal(
+        graph,
+        target,
+        fields,
+        {tuple(incoming_values[field] for field in fields): []},
+    )
+    seen_nodes = set(updated["nodeMap"])
     candidates = [
         (values, path)
         for values, path in states.items()
         if _requirement_satisfied(requirement, dict(zip(fields, values)), seen_nodes)
     ]
     if not candidates:
-        raise EditorError(f"未找到可满足 {requirement} 的有效选择链")
-    values_tuple, path = min(candidates, key=lambda item: (sum(abs(value) for value in item[0]), len(item[1])))
+        inherited = "、".join(
+            RELATIONSHIP_CHARACTERS.get(field, field) for field in fields
+        )
+        raise EditorError(
+            f"仅修改第 {target_chapter} 章无法满足 {requirement}。"
+            f"它依赖前章的 {inherited} 数值；为保护已完成章节，本版本不会跨章改写。"
+        )
+    # Prefer the strongest route that still belongs to the selected outcome.
+    # This leaves headroom for later deductions instead of merely touching the
+    # threshold (for example yy=170 for a >=170 gate).
+    values_tuple, path = max(
+        candidates,
+        key=lambda item: (sum(item[0]), -len(item[1])),
+    )
 
-    updated = copy.deepcopy(archive)
-    for chapter_number in range(1, int(target_chapter) + 1):
-        updated, _ = plan_chapter_unlock(updated, graphs, str(chapter_number))
+    chapter_ids = {node["id"] for node in graph["nodes"]}
+    protected_nodes = {
+        node_id: copy.deepcopy(record)
+        for node_id, record in archive["nodeMap"].items()
+        if node_id not in chapter_ids
+    }
+    chapter_major_ids = {node["majorId"] for node in graph["nodes"]}
+    protected_majors = {
+        major_id: copy.deepcopy(record)
+        for major_id, record in archive["majorMap"].items()
+        if major_id not in chapter_major_ids
+    }
+    # plan_chapter_unlock may opportunistically add alternate majorPaths while
+    # discovering missing nodes. Restore every pre-existing outside-chapter
+    # record before applying the selected route.
+    updated["nodeMap"].update(copy.deepcopy(protected_nodes))
+    updated["majorMap"].update(copy.deepcopy(protected_majors))
     updated = _rewrite_selected_route(updated, graphs, path)
+    if any(updated["nodeMap"].get(key) != value for key, value in protected_nodes.items()):
+        raise EditorError("安全检查失败：规划过程试图修改前章节点，已取消写入")
+    if any(updated["majorMap"].get(key) != value for key, value in protected_majors.items()):
+        raise EditorError("安全检查失败：规划过程试图修改前章路线索引，已取消写入")
     values = story_route_values(updated, graphs, target, fields)
     if not _requirement_satisfied(requirement, values, set(updated["nodeMap"])):
         raise EditorError("隐藏数值路线写入后未通过所选门槛复算")
@@ -533,6 +584,62 @@ def _maximum_score_path(graph: dict[str, Any], target: str, field: str) -> tuple
     return list(reversed(path)), scores[target]
 
 
+def _maximum_valid_score_path(
+    archive: dict[str, Any],
+    graphs: dict[str, dict[str, Any]],
+    chapter: str,
+    target: str,
+    primary_field: str,
+) -> tuple[list[str], int]:
+    graph = graphs[chapter]
+    nodes = _node_index(graph)
+    fields = list(
+        dict.fromkeys(
+            [primary_field]
+            + [
+                field
+                for node in graph["nodes"]
+                for field in relationship_fields(node.get("requirement") or "")
+            ]
+        )
+    )
+    root, order, adjacency = _topological_graph(graph)
+    root_previous = archive["nodeMap"].get(root, {}).get("lastNode", "")
+    incoming = story_route_values(archive, graphs, root_previous, fields)
+    seen_nodes = set(archive["nodeMap"])
+    states: dict[str, dict[tuple[int, ...], list[str]]] = {node_id: {} for node_id in nodes}
+
+    def add(values: tuple[int, ...], node_id: str) -> tuple[int, ...]:
+        relationship = nodes[node_id].get("relationship") or {}
+        return tuple(values[index] + int(relationship.get(field, 0)) for index, field in enumerate(fields))
+
+    def allowed(node_id: str, values: tuple[int, ...]) -> bool:
+        requirement = nodes[node_id].get("requirement") or ""
+        return not requirement or _requirement_satisfied(
+            requirement, dict(zip(fields, values)), seen_nodes
+        )
+
+    root_values = add(tuple(incoming[field] for field in fields), root)
+    if allowed(root, root_values):
+        states[root][root_values] = [root]
+    for source in order:
+        for destination in adjacency[source]:
+            for values, path in states[source].items():
+                candidate = add(values, destination)
+                if allowed(destination, candidate):
+                    states[destination].setdefault(candidate, path + [destination])
+        if sum(len(item) for item in states.values()) > 250_000:
+            raise EditorError("最高值路线组合过多，已停止以避免修改器无响应")
+    if not states.get(target):
+        raise EditorError(f"在当前前章数值下，找不到抵达 {target} 的合法最高值路线")
+    primary_index = fields.index(primary_field)
+    values, path = max(
+        states[target].items(),
+        key=lambda item: (item[0][primary_index], sum(item[0]), -len(item[1])),
+    )
+    return path, values[primary_index]
+
+
 def plan_maximum_relationship_route(
     archive: dict[str, Any],
     graphs: dict[str, dict[str, Any]],
@@ -544,48 +651,53 @@ def plan_maximum_relationship_route(
     if chapter not in graphs:
         raise EditorError(f"未知章节：{chapter}")
     graph = graphs[chapter]
-    path, score = _maximum_score_path(graph, target, field)
+    chapter_ids = {node["id"] for node in graph["nodes"]}
+    protected_nodes = {
+        node_id: copy.deepcopy(record)
+        for node_id, record in archive["nodeMap"].items()
+        if node_id not in chapter_ids
+    }
+    chapter_major_ids = {node["majorId"] for node in graph["nodes"]}
+    protected_majors = {
+        major_id: copy.deepcopy(record)
+        for major_id, record in archive["majorMap"].items()
+        if major_id not in chapter_major_ids
+    }
     updated, _ = plan_chapter_unlock(archive, graphs, chapter)
-    metadata = _node_index(graph)
-    node_map = updated["nodeMap"]
-    major_map = updated["majorMap"]
+    updated["nodeMap"].update(copy.deepcopy(protected_nodes))
+    updated["majorMap"].update(copy.deepcopy(protected_majors))
+    path, score = _maximum_valid_score_path(updated, graphs, chapter, target, field)
+    updated = _rewrite_selected_route(updated, graphs, path)
 
-    root_previous = node_map.get(path[0], {}).get("lastNode", "")
-    segment_start = 0
-    for index, node_id in enumerate(path):
-        major_id = metadata[node_id]["majorId"]
-        if index == 0 or metadata[path[index - 1]]["majorId"] != major_id:
-            segment_start = index
-        previous_id = path[index - 1] if index else root_previous
-        next_id = path[index + 1] if index + 1 < len(path) else node_map[node_id].get("lastNext", "")
-        record: dict[str, Any] = {
-            "id": node_id,
-            "lastNode": previous_id,
-            "lastRoute": {"nodes": path[segment_start : index + 1]},
-        }
-        if next_id:
-            record["lastNext"] = next_id
-        node_map[node_id] = record
-
-    segments: list[tuple[str, list[str]]] = []
-    for node_id in path:
-        major_id = metadata[node_id]["majorId"]
-        if not segments or segments[-1][0] != major_id:
-            segments.append((major_id, [node_id]))
-        else:
-            segments[-1][1].append(node_id)
-    for index, (major_id, route) in enumerate(segments):
-        record = major_map.setdefault(
-            major_id, {"lastMajorId": "", "nextMajorId": "", "majorPaths": {}}
-        )
-        if index:
-            record["lastMajorId"] = segments[index - 1][0]
-        if index + 1 < len(segments):
-            next_major = segments[index + 1][0]
-            record["nextMajorId"] = next_major
-            record.setdefault("majorPaths", {})[next_major] = route
+    if any(updated["nodeMap"].get(key) != value for key, value in protected_nodes.items()):
+        raise EditorError("安全检查失败：最高值路线试图修改其他章节节点")
+    if any(updated["majorMap"].get(key) != value for key, value in protected_majors.items()):
+        raise EditorError("安全检查失败：最高值路线试图修改其他章节索引")
 
     validate_archive(updated)
-    if story_route_score(updated, graph, target, field) != score:
+    if story_route_values(updated, graphs, target, [field])[field] != score:
         raise EditorError("隐藏数值路线写入后复算不一致")
+    for node_id in path:
+        requirement = _node_index(graph)[node_id].get("requirement") or ""
+        if "r." in requirement:
+            _, satisfied = relationship_requirement_status(updated, graphs, node_id)
+            if not satisfied:
+                raise EditorError(f"最高值路线在 {node_id} 未通过中途门槛 {requirement}")
     return updated, path, score
+
+
+def plan_maximum_chapter_relationship_route(
+    archive: dict[str, Any],
+    graphs: dict[str, dict[str, Any]],
+    chapter: str,
+) -> tuple[dict[str, Any], list[str], str, int, int]:
+    if chapter not in CHAPTER_RELATIONSHIP_DEFAULTS:
+        raise EditorError(f"第 {chapter} 章没有默认沉沦值路线")
+    field, _ = CHAPTER_RELATIONSHIP_DEFAULTS[chapter]
+    target = "n1725a1" if chapter == "7" else _chapter_completion(graphs[chapter])
+    before = story_route_values(archive, graphs, target, [field])[field]
+    updated, path, _ = plan_maximum_relationship_route(
+        archive, graphs, chapter, field, target
+    )
+    after = story_route_values(updated, graphs, target, [field])[field]
+    return updated, path, field, before, after

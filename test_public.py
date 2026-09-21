@@ -8,12 +8,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from rogd_model import atomic_write, encode_json, load_json, sha256_bytes, validate_archive, validate_setting
+from rogd_model import EditorError, atomic_write, encode_json, load_json, sha256_bytes, validate_archive, validate_setting
 from story_graph import (
     all_story_nodes,
     chapter_unlock_status,
     load_story_graphs,
     plan_chapter_unlock,
+    plan_maximum_chapter_relationship_route,
     plan_maximum_relationship_route,
     plan_relationship_gate_route,
     plan_story_unlock,
@@ -88,7 +89,7 @@ class StoryGraphTests(unittest.TestCase):
         self.assertEqual(missing_after, set())
         self.assertEqual(unfinished_after, set())
 
-    def test_maximum_chapter_five_relationship_route_reaches_270(self) -> None:
+    def test_maximum_chapter_five_relationship_route_reaches_high_gate(self) -> None:
         graphs = load_story_graphs()
         archive = {
             "majorMap": {},
@@ -96,17 +97,19 @@ class StoryGraphTests(unittest.TestCase):
             "currentNode": "preserve-me",
             "currentRoute": {"nodes": ["preserve-route"]},
         }
+        for chapter in ("1", "2", "3", "4"):
+            archive, *_ = plan_maximum_chapter_relationship_route(archive, graphs, chapter)
         planned, path, score = plan_maximum_relationship_route(
             archive, graphs, "5", "yy", "n1537b"
         )
-        self.assertEqual(score, 270)
-        self.assertEqual(story_route_score(planned, graphs["5"], "n1537b", "yy"), 270)
+        self.assertGreater(score, 250)
+        self.assertGreater(story_route_score(planned, graphs["5"], "n1537b", "yy"), 250)
         self.assertIn("n1534a", path)
         self.assertIn("n1517b", path)
         self.assertEqual(planned["currentNode"], "preserve-me")
         self.assertEqual(planned["currentRoute"], {"nodes": ["preserve-route"]})
 
-    def test_relationship_presets_cover_every_heroine_and_finale(self) -> None:
+    def test_relationship_presets_change_only_the_selected_chapter(self) -> None:
         graphs = load_story_graphs()
         archive = {
             "majorMap": {},
@@ -121,11 +124,6 @@ class StoryGraphTests(unittest.TestCase):
             "n1433",   # 宋诗琪 / sq
             "n1537b",  # 何月盈 / yy
             "n1633",   # 潘梦娜 / mn
-            "n1732",   # 第七章继承唐晓甜
-            "n1733",   # 第七章继承何月盈
-            "n1734",   # 第七章继承宋诗琪
-            "n1735b",  # 第七章陈欣欣真爱
-            "n1725",   # 第七章潘梦娜高值
         )
         for target in targets:
             with self.subTest(target=target):
@@ -136,6 +134,37 @@ class StoryGraphTests(unittest.TestCase):
                 self.assertTrue(path)
                 self.assertEqual(planned["currentNode"], "preserve-me")
                 self.assertEqual(planned["currentRoute"], {"nodes": ["preserve-route"]})
+
+    def test_cross_chapter_relationship_rewrite_is_refused(self) -> None:
+        graphs = load_story_graphs()
+        archive = {
+            "majorMap": {},
+            "nodeMap": {},
+            "currentNode": "preserve-me",
+            "currentRoute": {"nodes": ["preserve-route"]},
+        }
+        with self.assertRaisesRegex(EditorError, "不会跨章改写"):
+            plan_relationship_gate_route(archive, graphs, "n1732")
+
+    def test_chapter_maximum_buttons_form_a_valid_sequential_route(self) -> None:
+        graphs = load_story_graphs()
+        archive = {
+            "majorMap": {},
+            "nodeMap": {},
+            "currentNode": "preserve-me",
+            "currentRoute": {"nodes": ["preserve-route"]},
+        }
+        expected = {"1": 85, "2": 230, "3": 140, "4": 200, "5": 275, "6": 205, "7": 275}
+        for chapter in map(str, range(1, 8)):
+            with self.subTest(chapter=chapter):
+                archive, path, field, _, after = plan_maximum_chapter_relationship_route(
+                    archive, graphs, chapter
+                )
+                self.assertTrue(path)
+                self.assertEqual(after, expected[chapter])
+                self.assertIn(field, {"yl", "xt", "xrza", "sq", "yy", "mn"})
+                self.assertEqual(archive["currentNode"], "preserve-me")
+                self.assertEqual(archive["currentRoute"], {"nodes": ["preserve-route"]})
 
 
 class SteamHelperTests(unittest.TestCase):

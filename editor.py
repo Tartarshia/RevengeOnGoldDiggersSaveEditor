@@ -24,11 +24,13 @@ from rogd_model import (
 )
 from steam_schema import Achievement, load_achievements
 from story_graph import (
+    CHAPTER_RELATIONSHIP_DEFAULTS,
     RELATIONSHIP_CHARACTERS,
     all_story_nodes,
     chapter_unlock_status,
     load_story_graphs,
     plan_chapter_unlock,
+    plan_maximum_chapter_relationship_route,
     plan_maximum_relationship_route,
     plan_relationship_gate_route,
     plan_story_unlock,
@@ -36,6 +38,7 @@ from story_graph import (
     relationship_gate_nodes,
     relationship_requirement_status,
     story_route_score,
+    story_route_values,
 )
 
 
@@ -174,6 +177,16 @@ class Editor(tk.Tk):
             wraplength=1040,
             justify="left",
         ).pack(anchor="w", pady=(0, 8))
+        chapter_actions = ttk.Frame(self.relationship_tab)
+        chapter_actions.pack(fill="x", pady=(0, 8))
+        ttk.Label(chapter_actions, text="按章最高沉沦度：").pack(side="left")
+        for chapter in map(str, range(1, 8)):
+            _, character = CHAPTER_RELATIONSHIP_DEFAULTS[chapter]
+            ttk.Button(
+                chapter_actions,
+                text=f"第 {chapter} 章 {character}",
+                command=lambda selected=chapter: self.apply_chapter_max_relationship(selected),
+            ).pack(side="left", padx=(0, 4))
         self.relationship_tree = self._tree(
             self.relationship_tab,
             ("status", "chapter", "character", "branch", "requirement", "current"),
@@ -186,6 +199,55 @@ class Editor(tk.Tk):
             actions, text="应用选中结局 / 分支路线", command=self.apply_selected_relationship_gate
         ).pack(side="left")
         ttk.Button(actions, text="刷新数值", command=self.refresh_relationships).pack(side="left", padx=8)
+
+    def apply_chapter_max_relationship(self, chapter: str) -> None:
+        if is_game_running():
+            messagebox.showerror("请关闭游戏", "请先完全关闭游戏，再修改隐藏数值路线。", parent=self)
+            return
+        field, character = CHAPTER_RELATIONSHIP_DEFAULTS[chapter]
+        try:
+            updated, path, _, before, after = plan_maximum_chapter_relationship_route(
+                self.archive, self.story_graphs, chapter
+            )
+        except Exception as exc:
+            messagebox.showerror("无法规划最高值路线", str(exc), parent=self)
+            return
+        prompt = (
+            f"设置第 {chapter} 章 {character}最高沉沦度路线？\n\n"
+            f"字段：{field}\n当前复算：{before}\n最高路线：{after}\n"
+            f"选择链：{len(path)} 个节点\n\n"
+            "只会重建本章路线；其他章节的既有节点和路线索引必须保持不变。"
+            "当前游玩位置不变，写入前会备份并校验 Steam Cloud。"
+        )
+        if not messagebox.askyesno("确认本章最高值路线", prompt, parent=self):
+            return
+        try:
+            backup_dir, digest = save_archive(self.paths, updated)
+            self.archive = load_json(self.paths.archive)
+            validate_archive(self.archive)
+            target = "n1725a1" if chapter == "7" else next(
+                node["id"] for node in self.story_graphs[chapter]["nodes"]
+                if node.get("category") == "chapEndFlag"
+            )
+            actual = story_route_values(
+                self.archive, self.story_graphs, target, [field]
+            )[field]
+            if actual != after:
+                raise EditorError(f"写入复读值为 {actual}，预期 {after}。")
+            self.refresh_routes()
+            self.refresh_relationships()
+            self.log(
+                f"第 {chapter} 章 {character}最高路线写入完成：{field}={actual}；"
+                f"备份 {backup_dir.name}；SHA-256 {digest[:16]}…"
+            )
+            messagebox.showinfo(
+                "本章最高值路线完成",
+                f"第 {chapter} 章已复读确认：{field}={actual}。\n备份：{backup_dir}",
+                parent=self,
+            )
+        except Exception as exc:
+            self.log(f"第 {chapter} 章最高值路线写入失败：{exc}")
+            messagebox.showerror("最高值路线写入失败", str(exc), parent=self)
 
     def _build_log_tab(self):
         self.log_text = tk.Text(self.log_tab, wrap="word", state="disabled")

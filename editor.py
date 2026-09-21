@@ -24,11 +24,18 @@ from rogd_model import (
 )
 from steam_schema import Achievement, load_achievements
 from story_graph import (
+    RELATIONSHIP_CHARACTERS,
     all_story_nodes,
     chapter_unlock_status,
     load_story_graphs,
     plan_chapter_unlock,
+    plan_maximum_relationship_route,
+    plan_relationship_gate_route,
     plan_story_unlock,
+    relationship_fields,
+    relationship_gate_nodes,
+    relationship_requirement_status,
+    story_route_score,
 )
 
 
@@ -65,14 +72,17 @@ class Editor(tk.Tk):
         self.achievement_tab = ttk.Frame(notebook, padding=8)
         self.collect_tab = ttk.Frame(notebook, padding=8)
         self.route_tab = ttk.Frame(notebook, padding=8)
+        self.relationship_tab = ttk.Frame(notebook, padding=8)
         self.log_tab = ttk.Frame(notebook, padding=8)
         notebook.add(self.achievement_tab, text="Steam 成就")
         notebook.add(self.collect_tab, text="档案 / 差分")
         notebook.add(self.route_tab, text="剧情路线")
+        notebook.add(self.relationship_tab, text="隐藏数值 / 结局")
         notebook.add(self.log_tab, text="操作日志")
         self._build_achievement_tab()
         self._build_collect_tab()
         self._build_route_tab()
+        self._build_relationship_tab()
         self._build_log_tab()
 
         status = ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w", padding=5)
@@ -149,6 +159,34 @@ class Editor(tk.Tk):
                 command=lambda selected=chapter: self.unlock_chapter(selected),
             ).pack(side="left", padx=(0, 5))
 
+    def _build_relationship_tab(self):
+        mapping = (
+            "角色对应：第1章 陈欣欣 yl；第2章 唐晓甜 xt；第3章 陈欣如 xr / 真爱 xrza；"
+            "第4章 宋诗琪 sq（并记录何月盈 yy、陈欣欣真爱 xx 与两条分支标记）；"
+            "第5章 何月盈 yy；第6章 潘梦娜 mn；第7章汇总判定 mn、xt、yy、sq、xx。"
+        )
+        ttk.Label(self.relationship_tab, text=mapping, wraplength=1040, justify="left").pack(
+            anchor="w", pady=(0, 4)
+        )
+        ttk.Label(
+            self.relationship_tab,
+            text="每一行都是游戏资源里的真实门槛。应用后会重建满足该门槛的选择链；不会直接伪造数值，也不会改变当前游玩位置。",
+            wraplength=1040,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self.relationship_tree = self._tree(
+            self.relationship_tab,
+            ("status", "chapter", "character", "branch", "requirement", "current"),
+            ("当前", "章节", "角色 / 数值", "结局或分支", "解锁规则", "当前路线复算"),
+            (72, 58, 205, 155, 360, 180),
+        )
+        actions = ttk.Frame(self.relationship_tab)
+        actions.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            actions, text="应用选中结局 / 分支路线", command=self.apply_selected_relationship_gate
+        ).pack(side="left")
+        ttk.Button(actions, text="刷新数值", command=self.refresh_relationships).pack(side="left", padx=8)
+
     def _build_log_tab(self):
         self.log_text = tk.Text(self.log_tab, wrap="word", state="disabled")
         self.log_text.pack(fill="both", expand=True)
@@ -172,6 +210,7 @@ class Editor(tk.Tk):
             self.story_graphs = load_story_graphs()
             self.refresh_collectibles()
             self.refresh_routes()
+            self.refresh_relationships()
             self.refresh_achievements()
             running = "运行中" if is_game_running() else "已关闭"
             self.summary_var.set(
@@ -236,6 +275,111 @@ class Editor(tk.Tk):
             )
         self.route_tree.tag_configure("achieved", foreground="#277a35")
 
+    @staticmethod
+    def _display_requirement(requirement: str) -> str:
+        result = requirement.replace("&&", " 且 ").replace("||", " 或 ")
+        for field, character in sorted(RELATIONSHIP_CHARACTERS.items(), key=lambda item: -len(item[0])):
+            result = result.replace(f"r.{field}", f"{character}[{field}]")
+        return result.replace("n.", "已回收节点 ")
+
+    def refresh_relationships(self) -> None:
+        if not self.story_graphs or not self.archive:
+            return
+        self.relationship_tree.delete(*self.relationship_tree.get_children())
+        for chapter, node in relationship_gate_nodes(self.story_graphs):
+            requirement = node.get("requirement") or ""
+            fields = relationship_fields(requirement)
+            values, satisfied = relationship_requirement_status(
+                self.archive, self.story_graphs, node["id"]
+            )
+            has_route = node["id"] in self.archive["nodeMap"]
+            characters = " / ".join(
+                dict.fromkeys(f"{RELATIONSHIP_CHARACTERS.get(field, field)} [{field}]" for field in fields)
+            )
+            current = (
+                "，".join(f"{field}={values[field]}" for field in fields)
+                if has_route
+                else "尚未建立该节点路线"
+            )
+            self.relationship_tree.insert(
+                "",
+                "end",
+                iid=node["id"],
+                values=(
+                    "满足" if satisfied else ("未满足" if has_route else "未建立"),
+                    f"第 {chapter} 章",
+                    characters,
+                    node.get("label", node["id"]),
+                    self._display_requirement(requirement),
+                    current or "—",
+                ),
+                tags=("achieved" if satisfied else "missing",),
+            )
+        self.relationship_tree.tag_configure("achieved", foreground="#277a35")
+
+    def apply_selected_relationship_gate(self) -> None:
+        selection = self.relationship_tree.selection()
+        if not selection:
+            messagebox.showinfo("请选择", "请先选择一个结局或分支门槛。", parent=self)
+            return
+        if is_game_running():
+            messagebox.showerror("请关闭游戏", "请先完全关闭游戏，再修改隐藏数值路线。", parent=self)
+            return
+        target = selection[0]
+        entry = next(
+            ((chapter, node) for chapter, node in relationship_gate_nodes(self.story_graphs) if node["id"] == target),
+            None,
+        )
+        if entry is None:
+            messagebox.showerror("规则不存在", f"找不到门槛节点 {target}。", parent=self)
+            return
+        chapter, node = entry
+        before, _ = relationship_requirement_status(self.archive, self.story_graphs, target)
+        try:
+            updated, path, planned = plan_relationship_gate_route(
+                self.archive, self.story_graphs, target
+            )
+        except Exception as exc:
+            messagebox.showerror("无法规划门槛路线", str(exc), parent=self)
+            return
+        before_text = "，".join(f"{key}={value}" for key, value in before.items()) or "无"
+        planned_text = "，".join(f"{key}={value}" for key, value in planned.items())
+        prompt = (
+            f"应用第 {chapter} 章路线：{node.get('label', target)}？\n\n"
+            f"游戏门槛：{self._display_requirement(node.get('requirement') or '')}\n"
+            f"当前复算：{before_text}\n"
+            f"计划复算：{planned_text}（选择链 {len(path)} 个节点）\n\n"
+            "程序会先回收抵达本章所需的节点，再重建一条满足该门槛的真实选择链。"
+            "当前游玩位置不变；写入前会备份并校验 Steam Cloud。"
+        )
+        if not messagebox.askyesno("确认结局路线", prompt, parent=self):
+            return
+        try:
+            backup_dir, digest = save_archive(self.paths, updated)
+            self.archive = load_json(self.paths.archive)
+            validate_archive(self.archive)
+            actual, satisfied = relationship_requirement_status(
+                self.archive, self.story_graphs, target
+            )
+            if not satisfied:
+                raise EditorError("写入复读后，所选结局门槛仍未满足。")
+            self.refresh_routes()
+            self.refresh_relationships()
+            actual_text = "，".join(f"{key}={value}" for key, value in actual.items())
+            self.log(
+                f"第 {chapter} 章 {node.get('label', target)} 门槛路线写入完成：{actual_text}；"
+                f"备份 {backup_dir.name}；SHA-256 {digest[:16]}…"
+            )
+            messagebox.showinfo(
+                "结局路线写入完成",
+                f"已复读确认：{actual_text}\n满足 {node.get('requirement')}。\n"
+                f"备份：{backup_dir}\n\n请从对应节点的前一段进入游戏验证分支。",
+                parent=self,
+            )
+        except Exception as exc:
+            self.log(f"结局路线写入失败：{exc}")
+            messagebox.showerror("结局路线写入失败", str(exc), parent=self)
+
     def selected_story_node(self):
         selection = self.route_tree.selection()
         if not selection:
@@ -277,6 +421,7 @@ class Editor(tk.Tk):
             self.archive = load_json(self.paths.archive)
             validate_archive(self.archive)
             self.refresh_routes()
+            self.refresh_relationships()
             total = len(all_story_nodes(self.story_graphs))
             self.summary_var.set(
                 f"剧情路线: {len(self.archive['nodeMap'])}/{total} 节点    "
@@ -338,6 +483,7 @@ class Editor(tk.Tk):
                     f"{len(actual_unfinished)} 个完整播放记录。"
                 )
             self.refresh_routes()
+            self.refresh_relationships()
             total = len(all_story_nodes(self.story_graphs))
             self.summary_var.set(
                 f"剧情路线: {len(self.archive['nodeMap'])}/{total} 节点    "
@@ -356,6 +502,52 @@ class Editor(tk.Tk):
         except Exception as exc:
             self.log(f"第 {chapter} 章整章写入失败：{exc}")
             messagebox.showerror("整章写入失败", str(exc), parent=self)
+
+    def set_chapter_five_max_relationship(self) -> None:
+        if is_game_running():
+            messagebox.showerror("请关闭游戏", "请先完全关闭游戏，再修改隐藏路线数值。", parent=self)
+            return
+        target = "n1537b"
+        before = story_route_score(self.archive, self.story_graphs["5"], target, "yy")
+        try:
+            updated, path, score = plan_maximum_relationship_route(
+                self.archive, self.story_graphs, "5", "yy", target
+            )
+        except Exception as exc:
+            messagebox.showerror("无法规划沉沦度路线", str(exc), parent=self)
+            return
+        prompt = (
+            "设置第五章最高沉沦度路线？\n\n"
+            f"当前关底路线复算值：{before}\n"
+            f"新路线复算值：{score}（共 {len(path)} 个节点）\n\n"
+            "这会改写第五章的当前选择链，使游戏从路线本身计算出沉沦度，"
+            "但不会删除任何已解锁节点，也不会改变当前游玩位置。\n"
+            "写入前会备份并进行 Steam Cloud 哈希复读。"
+        )
+        if not messagebox.askyesno("确认隐藏数值路线", prompt, parent=self):
+            return
+        try:
+            backup_dir, digest = save_archive(self.paths, updated)
+            self.archive = load_json(self.paths.archive)
+            validate_archive(self.archive)
+            actual = story_route_score(self.archive, self.story_graphs["5"], target, "yy")
+            if actual != score:
+                raise EditorError(f"写入复读后的沉沦度路线为 {actual}，预期 {score}。")
+            self.refresh_routes()
+            self.refresh_relationships()
+            self.log(
+                f"第五章沉沦度路线已从 {before} 调整为 {actual}；"
+                f"备份 {backup_dir.name}；SHA-256 {digest[:16]}…"
+            )
+            messagebox.showinfo(
+                "隐藏路线写入完成",
+                f"第五章关底路线已复读确认：沉沦度 {actual}。\n"
+                f"备份：{backup_dir}\n\n请启动游戏，从第五章后段节点进入验证结局。",
+                parent=self,
+            )
+        except Exception as exc:
+            self.log(f"第五章沉沦度路线写入失败：{exc}")
+            messagebox.showerror("隐藏路线写入失败", str(exc), parent=self)
 
     def selected_achievement(self) -> Achievement | None:
         selection = self.achievement_tree.selection()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,19 @@ from rogd_model import BUNDLE_DIR, EditorError, validate_archive
 
 
 STORY_GRAPHS_PATH = BUNDLE_DIR / "references" / "story_graphs.json"
+
+RELATIONSHIP_CHARACTERS = {
+    "yl": "陈欣欣（第一章）",
+    "xt": "唐晓甜",
+    "xr": "陈欣如",
+    "xrza": "陈欣如·真爱",
+    "sq": "宋诗琪",
+    "yy": "何月盈",
+    "mn": "潘梦娜",
+    "xx": "陈欣欣·真爱",
+    "sqfb": "宋诗琪分支标记",
+    "yyfb": "何月盈分支标记",
+}
 
 
 def load_story_graphs(path: Path = STORY_GRAPHS_PATH) -> dict[str, dict[str, Any]]:
@@ -214,3 +228,364 @@ def chapter_unlock_status(
         if node_id in nonterminal and not archive["nodeMap"][node_id].get("lastNext")
     }
     return missing, unfinished
+
+
+def story_route_score(
+    archive: dict[str, Any],
+    graph: dict[str, Any],
+    target: str,
+    field: str,
+) -> int:
+    nodes = _node_index(graph)
+    score = 0
+    cursor = target
+    visited: set[str] = set()
+    while cursor in nodes and cursor in archive["nodeMap"] and cursor not in visited:
+        visited.add(cursor)
+        relationship = nodes[cursor].get("relationship") or {}
+        value = relationship.get(field, 0)
+        if isinstance(value, (int, float)):
+            score += int(value)
+        cursor = archive["nodeMap"][cursor].get("lastNode", "")
+    return score
+
+
+def relationship_gate_nodes(
+    graphs: dict[str, dict[str, Any]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return every node whose availability depends on a relationship value."""
+    return [
+        (chapter, node)
+        for chapter, node in all_story_nodes(graphs)
+        if "r." in (node.get("requirement") or "")
+    ]
+
+
+def story_route_values(
+    archive: dict[str, Any],
+    graphs: dict[str, dict[str, Any]],
+    target: str,
+    fields: list[str] | tuple[str, ...] | set[str],
+) -> dict[str, int]:
+    metadata = {node["id"]: node for _, node in all_story_nodes(graphs)}
+    values = {field: 0 for field in fields}
+    cursor = target
+    visited: set[str] = set()
+    while cursor in metadata and cursor in archive["nodeMap"] and cursor not in visited:
+        visited.add(cursor)
+        relationship = metadata[cursor].get("relationship") or {}
+        for field in values:
+            raw = relationship.get(field, 0)
+            if isinstance(raw, (int, float)):
+                values[field] += int(raw)
+        cursor = archive["nodeMap"][cursor].get("lastNode", "")
+    return values
+
+
+def relationship_fields(requirement: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"r\.([A-Za-z_][A-Za-z0-9_]*)", requirement)))
+
+
+def _requirement_satisfied(
+    requirement: str,
+    values: dict[str, int],
+    seen_nodes: set[str],
+) -> bool:
+    def term_satisfied(term: str) -> bool:
+        term = term.strip()
+        node_match = re.fullmatch(r"n\.([A-Za-z0-9_]+)", term)
+        if node_match:
+            return node_match.group(1) in seen_nodes
+        comparison = re.fullmatch(
+            r"r\.([A-Za-z_][A-Za-z0-9_]*)\s*(<=|>=|==|!=|<|>)\s*"
+            r"(?:r\.([A-Za-z_][A-Za-z0-9_]*)|(-?\d+))",
+            term,
+        )
+        if not comparison:
+            raise EditorError(f"暂不支持的隐藏数值规则：{term}")
+        left = values.get(comparison.group(1), 0)
+        right = values.get(comparison.group(3), 0) if comparison.group(3) else int(comparison.group(4))
+        operator = comparison.group(2)
+        return {
+            "<=": left <= right,
+            ">=": left >= right,
+            "==": left == right,
+            "!=": left != right,
+            "<": left < right,
+            ">": left > right,
+        }[operator]
+
+    return any(
+        all(term_satisfied(term) for term in and_group.split("&&"))
+        for and_group in requirement.split("||")
+    )
+
+
+def relationship_requirement_status(
+    archive: dict[str, Any],
+    graphs: dict[str, dict[str, Any]],
+    target: str,
+) -> tuple[dict[str, int], bool]:
+    node = next((node for _, node in all_story_nodes(graphs) if node["id"] == target), None)
+    if node is None:
+        raise EditorError(f"未知故事节点：{target}")
+    requirement = node.get("requirement") or ""
+    fields = relationship_fields(requirement)
+    values = story_route_values(archive, graphs, target, fields)
+    return values, target in archive["nodeMap"] and _requirement_satisfied(
+        requirement, values, set(archive["nodeMap"])
+    )
+
+
+def _topological_graph(graph: dict[str, Any]) -> tuple[str, list[str], dict[str, list[str]]]:
+    nodes = _node_index(graph)
+    adjacency: dict[str, list[str]] = {node_id: [] for node_id in nodes}
+    indegree = {node_id: 0 for node_id in nodes}
+    for edge in graph["edges"]:
+        source, destination = edge.get("source"), edge.get("target")
+        if source in nodes and destination in nodes:
+            adjacency[source].append(destination)
+            indegree[destination] += 1
+    roots = [node_id for node_id, degree in indegree.items() if degree == 0]
+    if len(roots) != 1:
+        raise EditorError(f"章节入口数量异常：{roots}")
+    queue = deque(roots)
+    order: list[str] = []
+    while queue:
+        node_id = queue.popleft()
+        order.append(node_id)
+        for destination in adjacency[node_id]:
+            indegree[destination] -= 1
+            if indegree[destination] == 0:
+                queue.append(destination)
+    if len(order) != len(nodes):
+        raise EditorError("故事关系图存在循环，无法规划隐藏数值路线")
+    return roots[0], order, adjacency
+
+
+def _paths_to_goal(
+    graph: dict[str, Any],
+    goal: str,
+    fields: list[str],
+    incoming: dict[tuple[int, ...], list[str]],
+) -> dict[tuple[int, ...], list[str]]:
+    nodes = _node_index(graph)
+    if goal not in nodes:
+        raise EditorError(f"故事关系图中不存在节点 {goal}")
+    root, order, adjacency = _topological_graph(graph)
+    states: dict[str, dict[tuple[int, ...], list[str]]] = {node_id: {} for node_id in nodes}
+
+    def add_values(values: tuple[int, ...], node_id: str) -> tuple[int, ...]:
+        relationship = nodes[node_id].get("relationship") or {}
+        return tuple(values[index] + int(relationship.get(field, 0)) for index, field in enumerate(fields))
+
+    for values, path in incoming.items():
+        states[root].setdefault(add_values(values, root), path + [root])
+    for source in order:
+        if source == goal:
+            continue
+        for destination in adjacency[source]:
+            for values, path in states[source].items():
+                states[destination].setdefault(add_values(values, destination), path + [destination])
+        if sum(len(item) for item in states.values()) > 250_000:
+            raise EditorError("可选路线组合过多，已停止以避免修改器无响应")
+    return states[goal]
+
+
+def _rewrite_selected_route(
+    archive: dict[str, Any],
+    graphs: dict[str, dict[str, Any]],
+    path: list[str],
+) -> dict[str, Any]:
+    updated = copy.deepcopy(archive)
+    metadata = {node["id"]: node for _, node in all_story_nodes(graphs)}
+    node_map = updated["nodeMap"]
+    major_map = updated["majorMap"]
+    segment_start = 0
+    for index, node_id in enumerate(path):
+        major_id = metadata[node_id]["majorId"]
+        if index == 0 or metadata[path[index - 1]]["majorId"] != major_id:
+            segment_start = index
+        next_id = path[index + 1] if index + 1 < len(path) else node_map.get(node_id, {}).get("lastNext", "")
+        record: dict[str, Any] = {
+            "id": node_id,
+            "lastNode": path[index - 1] if index else "",
+            "lastRoute": {"nodes": path[segment_start : index + 1]},
+        }
+        if next_id:
+            record["lastNext"] = next_id
+        node_map[node_id] = record
+
+    segments: list[tuple[str, list[str]]] = []
+    for node_id in path:
+        major_id = metadata[node_id]["majorId"]
+        if not segments or segments[-1][0] != major_id:
+            segments.append((major_id, [node_id]))
+        else:
+            segments[-1][1].append(node_id)
+    for index, (major_id, route) in enumerate(segments):
+        record = major_map.setdefault(major_id, {"lastMajorId": "", "nextMajorId": "", "majorPaths": {}})
+        if index:
+            record["lastMajorId"] = segments[index - 1][0]
+        if index + 1 < len(segments):
+            next_major = segments[index + 1][0]
+            record["nextMajorId"] = next_major
+            record.setdefault("majorPaths", {})[next_major] = route
+    return updated
+
+
+def plan_relationship_gate_route(
+    archive: dict[str, Any],
+    graphs: dict[str, dict[str, Any]],
+    target: str,
+) -> tuple[dict[str, Any], list[str], dict[str, int]]:
+    """Build a real recorded route that satisfies one selected relationship gate."""
+    validate_archive(archive)
+    target_entry = next(
+        ((chapter, node) for chapter, node in all_story_nodes(graphs) if node["id"] == target),
+        None,
+    )
+    if target_entry is None:
+        raise EditorError(f"未知故事节点：{target}")
+    target_chapter, target_node = target_entry
+    requirement = target_node.get("requirement") or ""
+    fields = relationship_fields(requirement)
+    if not fields:
+        raise EditorError(f"节点 {target} 没有隐藏数值门槛")
+
+    states: dict[tuple[int, ...], list[str]] = {tuple(0 for _ in fields): []}
+    for chapter_number in range(1, int(target_chapter) + 1):
+        chapter = str(chapter_number)
+        goal = target if chapter == target_chapter else _chapter_completion(graphs[chapter])
+        states = _paths_to_goal(graphs[chapter], goal, fields, states)
+    seen_nodes = {node["id"] for chapter in range(1, int(target_chapter) + 1) for node in graphs[str(chapter)]["nodes"]}
+    candidates = [
+        (values, path)
+        for values, path in states.items()
+        if _requirement_satisfied(requirement, dict(zip(fields, values)), seen_nodes)
+    ]
+    if not candidates:
+        raise EditorError(f"未找到可满足 {requirement} 的有效选择链")
+    values_tuple, path = min(candidates, key=lambda item: (sum(abs(value) for value in item[0]), len(item[1])))
+
+    updated = copy.deepcopy(archive)
+    for chapter_number in range(1, int(target_chapter) + 1):
+        updated, _ = plan_chapter_unlock(updated, graphs, str(chapter_number))
+    updated = _rewrite_selected_route(updated, graphs, path)
+    values = story_route_values(updated, graphs, target, fields)
+    if not _requirement_satisfied(requirement, values, set(updated["nodeMap"])):
+        raise EditorError("隐藏数值路线写入后未通过所选门槛复算")
+    validate_archive(updated)
+    return updated, path, values
+
+
+def _maximum_score_path(graph: dict[str, Any], target: str, field: str) -> tuple[list[str], int]:
+    nodes = _node_index(graph)
+    if target not in nodes:
+        raise EditorError(f"故事关系图中不存在节点 {target}")
+    adjacency: dict[str, list[str]] = {node_id: [] for node_id in nodes}
+    indegree = {node_id: 0 for node_id in nodes}
+    for edge in graph["edges"]:
+        source, destination = edge.get("source"), edge.get("target")
+        if source in nodes and destination in nodes:
+            adjacency[source].append(destination)
+            indegree[destination] += 1
+    queue = deque(node_id for node_id, degree in indegree.items() if degree == 0)
+    order: list[str] = []
+    while queue:
+        node_id = queue.popleft()
+        order.append(node_id)
+        for destination in adjacency[node_id]:
+            indegree[destination] -= 1
+            if indegree[destination] == 0:
+                queue.append(destination)
+    if len(order) != len(nodes):
+        raise EditorError("故事关系图存在循环，无法规划隐藏数值路线")
+
+    def value(node_id: str) -> int:
+        raw = (nodes[node_id].get("relationship") or {}).get(field, 0)
+        return int(raw) if isinstance(raw, (int, float)) else 0
+
+    unreachable = -10**9
+    scores = {node_id: unreachable for node_id in nodes}
+    previous: dict[str, str] = {}
+    roots = [node_id for node_id in order if all(node_id not in values for values in adjacency.values())]
+    if len(roots) != 1:
+        raise EditorError(f"章节入口数量异常：{roots}")
+    scores[roots[0]] = value(roots[0])
+    for source in order:
+        if scores[source] == unreachable:
+            continue
+        for destination in adjacency[source]:
+            candidate = scores[source] + value(destination)
+            if candidate > scores[destination]:
+                scores[destination] = candidate
+                previous[destination] = source
+    if scores[target] == unreachable:
+        raise EditorError(f"无法抵达隐藏数值目标节点 {target}")
+    path: list[str] = []
+    cursor = target
+    while cursor in nodes:
+        path.append(cursor)
+        if cursor == roots[0]:
+            break
+        cursor = previous[cursor]
+    return list(reversed(path)), scores[target]
+
+
+def plan_maximum_relationship_route(
+    archive: dict[str, Any],
+    graphs: dict[str, dict[str, Any]],
+    chapter: str,
+    field: str,
+    target: str,
+) -> tuple[dict[str, Any], list[str], int]:
+    validate_archive(archive)
+    if chapter not in graphs:
+        raise EditorError(f"未知章节：{chapter}")
+    graph = graphs[chapter]
+    path, score = _maximum_score_path(graph, target, field)
+    updated, _ = plan_chapter_unlock(archive, graphs, chapter)
+    metadata = _node_index(graph)
+    node_map = updated["nodeMap"]
+    major_map = updated["majorMap"]
+
+    root_previous = node_map.get(path[0], {}).get("lastNode", "")
+    segment_start = 0
+    for index, node_id in enumerate(path):
+        major_id = metadata[node_id]["majorId"]
+        if index == 0 or metadata[path[index - 1]]["majorId"] != major_id:
+            segment_start = index
+        previous_id = path[index - 1] if index else root_previous
+        next_id = path[index + 1] if index + 1 < len(path) else node_map[node_id].get("lastNext", "")
+        record: dict[str, Any] = {
+            "id": node_id,
+            "lastNode": previous_id,
+            "lastRoute": {"nodes": path[segment_start : index + 1]},
+        }
+        if next_id:
+            record["lastNext"] = next_id
+        node_map[node_id] = record
+
+    segments: list[tuple[str, list[str]]] = []
+    for node_id in path:
+        major_id = metadata[node_id]["majorId"]
+        if not segments or segments[-1][0] != major_id:
+            segments.append((major_id, [node_id]))
+        else:
+            segments[-1][1].append(node_id)
+    for index, (major_id, route) in enumerate(segments):
+        record = major_map.setdefault(
+            major_id, {"lastMajorId": "", "nextMajorId": "", "majorPaths": {}}
+        )
+        if index:
+            record["lastMajorId"] = segments[index - 1][0]
+        if index + 1 < len(segments):
+            next_major = segments[index + 1][0]
+            record["nextMajorId"] = next_major
+            record.setdefault("majorPaths", {})[next_major] = route
+
+    validate_archive(updated)
+    if story_route_score(updated, graph, target, field) != score:
+        raise EditorError("隐藏数值路线写入后复算不一致")
+    return updated, path, score

@@ -14,7 +14,11 @@ from story_graph import (
     chapter_unlock_status,
     load_story_graphs,
     plan_chapter_unlock,
+    plan_maximum_relationship_route,
+    plan_relationship_gate_route,
     plan_story_unlock,
+    relationship_requirement_status,
+    story_route_score,
 )
 
 
@@ -83,6 +87,55 @@ class StoryGraphTests(unittest.TestCase):
         missing_after, unfinished_after = chapter_unlock_status(planned, graphs, "5")
         self.assertEqual(missing_after, set())
         self.assertEqual(unfinished_after, set())
+
+    def test_maximum_chapter_five_relationship_route_reaches_270(self) -> None:
+        graphs = load_story_graphs()
+        archive = {
+            "majorMap": {},
+            "nodeMap": {},
+            "currentNode": "preserve-me",
+            "currentRoute": {"nodes": ["preserve-route"]},
+        }
+        planned, path, score = plan_maximum_relationship_route(
+            archive, graphs, "5", "yy", "n1537b"
+        )
+        self.assertEqual(score, 270)
+        self.assertEqual(story_route_score(planned, graphs["5"], "n1537b", "yy"), 270)
+        self.assertIn("n1534a", path)
+        self.assertIn("n1517b", path)
+        self.assertEqual(planned["currentNode"], "preserve-me")
+        self.assertEqual(planned["currentRoute"], {"nodes": ["preserve-route"]})
+
+    def test_relationship_presets_cover_every_heroine_and_finale(self) -> None:
+        graphs = load_story_graphs()
+        archive = {
+            "majorMap": {},
+            "nodeMap": {},
+            "currentNode": "preserve-me",
+            "currentRoute": {"nodes": ["preserve-route"]},
+        }
+        targets = (
+            "n1121a",  # 陈欣欣 / yl
+            "n1229c",  # 唐晓甜 / xt
+            "n1325",   # 陈欣如 / xrza
+            "n1433",   # 宋诗琪 / sq
+            "n1537b",  # 何月盈 / yy
+            "n1633",   # 潘梦娜 / mn
+            "n1732",   # 第七章继承唐晓甜
+            "n1733",   # 第七章继承何月盈
+            "n1734",   # 第七章继承宋诗琪
+            "n1735b",  # 第七章陈欣欣真爱
+            "n1725",   # 第七章潘梦娜高值
+        )
+        for target in targets:
+            with self.subTest(target=target):
+                planned, path, values = plan_relationship_gate_route(archive, graphs, target)
+                actual, satisfied = relationship_requirement_status(planned, graphs, target)
+                self.assertTrue(satisfied)
+                self.assertEqual(actual, values)
+                self.assertTrue(path)
+                self.assertEqual(planned["currentNode"], "preserve-me")
+                self.assertEqual(planned["currentRoute"], {"nodes": ["preserve-route"]})
 
 
 class SteamHelperTests(unittest.TestCase):

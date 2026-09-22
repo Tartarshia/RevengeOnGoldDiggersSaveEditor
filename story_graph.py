@@ -42,46 +42,50 @@ ACHIEVEMENT_ROUTE_SPECS = {
     "a28": {
         "name": "绝处逢生",
         "target": "n1721a1",
-        "launch": "n1718",
+        "launch": "n1709",
         "prep": [],
         "summary": "从“尝试求婚”进入月盈救援结局",
     },
     "a31": {
         "name": "久别重逢",
         "target": "n1727a1",
-        "launch": "n1726",
+        "launch": "n1709",
         "prep": [("4", "xx", True), ("5", "xx", True), ("6", "xx", True)],
         "summary": "梦娜低沉沦，且陈欣欣真爱值 xx>=4",
     },
     "a32": {
         "name": "鱼死网破",
         "target": "n1727b1",
-        "launch": "n1726",
+        "launch": "n1709",
         "prep": [("4", "xx", False), ("5", "xx", False), ("6", "xx", False)],
         "summary": "梦娜低沉沦，且陈欣欣真爱值 xx<4",
     },
     "a36": {
         "name": "重新出发",
         "target": "n1733a1",
-        "launch": "n1729",
+        "launch": "n1709",
         "prep": [("5", "yy", True)],
         "summary": "完成何月盈真爱前置，且 yy>=180",
     },
     "a37": {
         "name": "一起断网",
         "target": "n1734a1",
-        "launch": "n1729",
+        "launch": "n1709",
         "prep": [("4", "sq", True)],
         "summary": "完成宋诗琪惩罚前置，且 sq>=110",
     },
     "a39": {
         "name": "真爱至上",
         "target": "n1735b1",
-        "launch": "n1729",
+        "launch": "n1709",
         "prep": [("4", "xx", True), ("5", "xx", True), ("6", "xx", True)],
         "summary": "进入陈欣欣真爱结局，且 xx>=10",
     },
 }
+
+# v1.3.0 incorrectly wrote these ordinary story nodes into currentNode.  They
+# are kept here only so a later route preparation can repair affected saves.
+LEGACY_UNSAFE_ACHIEVEMENT_LAUNCHES = {"n1718", "n1726", "n1729"}
 
 
 def load_story_graphs(path: Path = STORY_GRAPHS_PATH) -> dict[str, dict[str, Any]]:
@@ -817,11 +821,22 @@ def plan_achievement_route(
     launch = str(spec["launch"])
     if launch not in final_path:
         raise EditorError(f"成就路线没有经过推荐入口 {launch}")
-    launch_record = updated["nodeMap"].get(launch)
-    if not isinstance(launch_record, dict):
+    if not isinstance(updated["nodeMap"].get(launch), dict):
         raise EditorError(f"成就入口 {launch} 未写入存档")
-    updated["currentNode"] = launch
-    updated["currentRoute"] = copy.deepcopy(launch_record.get("lastRoute", {"nodes": [launch]}))
+    # currentNode/currentRoute are active playback checkpoints, not ordinary
+    # story-map selections.  Jumping them into the middle of a synthesized
+    # route makes the game reject every chapter-seven node.  Normally preserve
+    # the verified checkpoint.  If v1.3.0 already left one of its known bad
+    # launch nodes behind, repair it to the safe chapter-seven checkpoint.
+    checkpoint_repaired = archive.get("currentNode") in LEGACY_UNSAFE_ACHIEVEMENT_LAUNCHES
+    if checkpoint_repaired:
+        safe_record = updated["nodeMap"].get(launch)
+        updated["currentNode"] = launch
+        updated["currentRoute"] = copy.deepcopy(safe_record.get("lastRoute", {"nodes": [launch]}))
+    elif updated.get("currentNode") != archive.get("currentNode"):
+        raise EditorError("安全检查失败：成就路线试图改变当前播放检查点")
+    if not checkpoint_repaired and updated.get("currentRoute") != archive.get("currentRoute"):
+        raise EditorError("安全检查失败：成就路线试图改变当前播放路线")
     validate_archive(updated)
 
     target = str(spec["target"])
@@ -831,6 +846,8 @@ def plan_achievement_route(
         "name": spec["name"],
         "target": target,
         "launch": launch,
+        "current_node": updated.get("currentNode", ""),
+        "checkpoint_repaired": checkpoint_repaired,
         "summary": spec["summary"],
         "chapters": changed_chapters,
         "path_length": len(final_path),

@@ -131,7 +131,7 @@ class Editor(tk.Tk):
             self.achievement_route_tab,
             text=(
                 "为容易被跨章选择锁住的结局准备可播放路线；不会直接授予 Steam 成就。"
-                "写入后从推荐入口继续播放，待结局正常触发后成就才会获得。"
+                "写入会保留当前播放检查点；从安全起点继续，待结局正常触发后成就才会获得。"
             ),
             wraplength=1040,
             justify="left",
@@ -139,7 +139,7 @@ class Editor(tk.Tk):
         self.achievement_route_tree = self._tree(
             self.achievement_route_tab,
             ("status", "id", "name", "chapters", "launch", "condition"),
-            ("Steam", "ID", "成就", "可能调整章节", "推荐入口", "路线条件"),
+            ("Steam", "ID", "成就", "可能调整章节", "安全起点", "路线条件"),
             (80, 65, 130, 125, 140, 570),
         )
         actions = ttk.Frame(self.achievement_route_tab)
@@ -392,11 +392,17 @@ class Editor(tk.Tk):
             if value != 0
         )
         chapters_text = "、".join(f"第 {chapter} 章" for chapter in info["chapters"])
+        checkpoint_text = (
+            f"修复旧版无效检查点为：{info['current_node']}\n"
+            if info["checkpoint_repaired"]
+            else f"保留当前检查点：{info['current_node']}\n"
+        )
         prompt = (
             f"准备成就路线：{achievement_id} {spec['name']}？\n\n"
             f"路线条件：{spec['summary']}\n"
             f"实际调整：{chapters_text}\n"
-            f"写入后入口：{info['launch']}\n"
+            f"{checkpoint_text}"
+            f"安全播放起点：{info['launch']}\n"
             f"路线复算：{values_text}\n\n"
             "这不会直接解锁 Steam 成就；必须启动游戏并播放到结局。"
             "写入前会备份，且只修改为该成就确实需要的章节。"
@@ -407,18 +413,19 @@ class Editor(tk.Tk):
             backup_dir, digest = save_archive(self.paths, updated)
             self.archive = load_json(self.paths.archive)
             validate_archive(self.archive)
-            if self.archive.get("currentNode") != info["launch"]:
-                raise EditorError("写入复读后没有停在推荐成就入口。")
+            if self.archive.get("currentNode") != info["current_node"]:
+                raise EditorError("写入复读后当前播放检查点发生了变化。")
             self.refresh_routes()
             self.refresh_relationships()
             self.log(
                 f"成就路线 {achievement_id} {spec['name']} 已准备；"
-                f"入口 {info['launch']}；调整 {chapters_text}；"
+                f"检查点 {info['current_node']}；安全起点 {info['launch']}；"
+                f"调整 {chapters_text}；"
                 f"备份 {backup_dir.name}；SHA-256 {digest[:16]}…"
             )
             messagebox.showinfo(
                 "成就路线已准备",
-                f"请启动游戏，从 {info['launch']} 继续播放至“{spec['name']}”结局。\n"
+                f"请启动游戏，从安全起点 {info['launch']} 继续播放至“{spec['name']}”结局。\n"
                 f"Steam 成就会由游戏正常触发。\n备份：{backup_dir}",
                 parent=self,
             )

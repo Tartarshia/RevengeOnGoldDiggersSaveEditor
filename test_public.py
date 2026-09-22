@@ -200,7 +200,11 @@ class StoryGraphTests(unittest.TestCase):
         for achievement_id, spec in ACHIEVEMENT_ROUTE_SPECS.items():
             with self.subTest(achievement_id=achievement_id):
                 planned, info = plan_achievement_route(base, graphs, achievement_id)
-                self.assertEqual(planned["currentNode"], spec["launch"])
+                self.assertEqual(planned["currentNode"], base["currentNode"])
+                self.assertEqual(planned["currentRoute"], base["currentRoute"])
+                self.assertEqual(info["current_node"], base["currentNode"])
+                self.assertEqual(spec["launch"], "n1709")
+                self.assertIn(spec["launch"], planned["nodeMap"])
                 self.assertIn(spec["target"], planned["nodeMap"])
                 self.assertEqual(info["target"], spec["target"])
                 self.assertIn("7", info["chapters"])
@@ -214,6 +218,25 @@ class StoryGraphTests(unittest.TestCase):
                     self.assertGreaterEqual(info["values"]["sq"], 110)
                 elif achievement_id == "a39":
                     self.assertGreaterEqual(info["values"]["xx"], 10)
+
+    def test_achievement_route_repairs_v130_mid_chapter_checkpoint(self) -> None:
+        graphs = load_story_graphs()
+        archive = {
+            "majorMap": {},
+            "nodeMap": {},
+            "currentNode": "preserve-me",
+            "currentRoute": {"nodes": ["preserve-route"]},
+        }
+        for chapter in map(str, range(1, 8)):
+            archive, *_ = plan_maximum_chapter_relationship_route(archive, graphs, chapter)
+        archive["currentNode"] = "n1718"
+        archive["currentRoute"] = {"nodes": ["n1718"]}
+
+        planned, info = plan_achievement_route(archive, graphs, "a28")
+
+        self.assertTrue(info["checkpoint_repaired"])
+        self.assertEqual(planned["currentNode"], "n1709")
+        self.assertEqual(planned["currentRoute"], planned["nodeMap"]["n1709"]["lastRoute"])
 
 
 class SteamHelperTests(unittest.TestCase):

@@ -131,7 +131,7 @@ class Editor(tk.Tk):
             self.achievement_route_tab,
             text=(
                 "为容易被跨章选择锁住的结局准备可播放路线；不会直接授予 Steam 成就。"
-                "写入会保留当前播放检查点；从安全起点继续，待结局正常触发后成就才会获得。"
+                "支持时会直接定位到结局前影片；播放结束后由游戏正常触发成就。"
             ),
             wraplength=1040,
             justify="left",
@@ -392,8 +392,13 @@ class Editor(tk.Tk):
             if value != 0
         )
         chapters_text = "、".join(f"第 {chapter} 章" for chapter in info["chapters"])
+        choices_text = "\n".join(
+            f"{index}. {choice}" for index, choice in enumerate(info["choices"], 1)
+        )
         checkpoint_text = (
-            f"修复旧版无效检查点为：{info['current_node']}\n"
+            f"直接播放结局影片：{info['playback']}\n"
+            if info["direct_playback"]
+            else f"修复旧版无效检查点为：{info['current_node']}\n"
             if info["checkpoint_repaired"]
             else f"保留当前检查点：{info['current_node']}\n"
         )
@@ -402,8 +407,15 @@ class Editor(tk.Tk):
             f"路线条件：{spec['summary']}\n"
             f"实际调整：{chapters_text}\n"
             f"{checkpoint_text}"
-            f"安全播放起点：{info['launch']}\n"
+            + ("" if info["direct_playback"] else f"安全播放起点：{info['launch']}\n")
+            +
             f"路线复算：{values_text}\n\n"
+            + (
+                f"游戏内必须这样选择：\n{choices_text}\n\n"
+                if choices_text and not info["direct_playback"]
+                else ""
+            )
+            +
             "这不会直接解锁 Steam 成就；必须启动游戏并播放到结局。"
             "写入前会备份，且只修改为该成就确实需要的章节。"
         )
@@ -425,8 +437,13 @@ class Editor(tk.Tk):
             )
             messagebox.showinfo(
                 "成就路线已准备",
-                f"请启动游戏，从安全起点 {info['launch']} 继续播放至“{spec['name']}”结局。\n"
-                f"Steam 成就会由游戏正常触发。\n备份：{backup_dir}",
+                (
+                    f"请启动游戏并直接播放“{spec['name']}”结局影片。\n"
+                    if info["direct_playback"]
+                    else f"请启动游戏，从安全起点 {info['launch']} 继续播放至“{spec['name']}”结局。\n"
+                )
+                + (f"\n游戏内必选：\n{choices_text}\n" if choices_text and not info["direct_playback"] else "")
+                + f"\nSteam 成就会由游戏正常触发。\n备份：{backup_dir}",
                 parent=self,
             )
         except Exception as exc:

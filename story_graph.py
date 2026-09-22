@@ -43,8 +43,27 @@ ACHIEVEMENT_ROUTE_SPECS = {
         "name": "绝处逢生",
         "target": "n1721a1",
         "launch": "n1709",
+        "playback": "n1721",
         "prep": [],
-        "summary": "从“尝试求婚”进入月盈救援结局",
+        "summary": "直接定位到“绝处逢生”结局前影片，播放结束后由游戏触发成就",
+        "choices": [
+            "暗藏心机：继续等",
+            "冷水澡：调查",
+            "礼貌等待：自在等",
+            "轻松破局：直接签约",
+            "私密邀约：配你",
+            "最后通牒：假意答应（不要选“暂时推掉”）",
+            "虚伪牌局：任意",
+            "牌桌失控：找理由暗示她收手",
+            "牌局翻盘：道歉承认自己错了",
+            "尝试求婚：为牌局道歉",
+        ],
+        "path": [
+            "n1701", "n1705", "n1706", "n1706a", "n1708", "n1709",
+            "n1709a", "n1711", "n1711a", "n1713", "n1714", "n1714b",
+            "n1715", "n1715b", "n1716", "n1716b", "n1718", "n1718a",
+            "n1721", "n1721a1",
+        ],
     },
     "a31": {
         "name": "久别重逢",
@@ -790,6 +809,23 @@ def plan_achievement_route(
     changed_chapters: list[str] = []
 
     def plan_final(current: dict[str, Any]) -> tuple[dict[str, Any], list[str], int]:
+        prescribed_path = spec.get("path")
+        if prescribed_path:
+            planned, _ = plan_chapter_unlock(current, graphs, "7")
+            planned = _rewrite_selected_route(planned, graphs, list(prescribed_path))
+            for node_id in prescribed_path:
+                requirement = _node_index(graphs["7"])[node_id].get("requirement") or ""
+                if requirement:
+                    _, satisfied = relationship_requirement_status(planned, graphs, node_id)
+                    if not satisfied:
+                        raise EditorError(
+                            f"精确成就路线在 {node_id} 未通过门槛 {requirement}；"
+                            "请先准备第六章高沉沦路线"
+                        )
+            score = story_route_values(
+                planned, graphs, str(spec["target"]), ["mn"]
+            )["mn"]
+            return planned, list(prescribed_path), score
         return plan_maximum_relationship_route(
             current,
             graphs,
@@ -828,14 +864,29 @@ def plan_achievement_route(
     # route makes the game reject every chapter-seven node.  Normally preserve
     # the verified checkpoint.  If v1.3.0 already left one of its known bad
     # launch nodes behind, repair it to the safe chapter-seven checkpoint.
-    checkpoint_repaired = archive.get("currentNode") in LEGACY_UNSAFE_ACHIEVEMENT_LAUNCHES
+    playback = str(spec.get("playback", ""))
+    direct_playback = bool(playback)
+    if direct_playback:
+        if playback not in final_path:
+            raise EditorError(f"成就路线没有经过结局影片节点 {playback}")
+        playback_record = updated["nodeMap"].get(playback)
+        if not isinstance(playback_record, dict) or not playback_record.get("lastNext"):
+            raise EditorError(f"结局影片节点 {playback} 不完整")
+        updated["currentNode"] = playback
+        updated["currentRoute"] = copy.deepcopy(
+            playback_record.get("lastRoute", {"nodes": [playback]})
+        )
+    checkpoint_repaired = (
+        not direct_playback
+        and archive.get("currentNode") in LEGACY_UNSAFE_ACHIEVEMENT_LAUNCHES
+    )
     if checkpoint_repaired:
         safe_record = updated["nodeMap"].get(launch)
         updated["currentNode"] = launch
         updated["currentRoute"] = copy.deepcopy(safe_record.get("lastRoute", {"nodes": [launch]}))
-    elif updated.get("currentNode") != archive.get("currentNode"):
+    elif not direct_playback and updated.get("currentNode") != archive.get("currentNode"):
         raise EditorError("安全检查失败：成就路线试图改变当前播放检查点")
-    if not checkpoint_repaired and updated.get("currentRoute") != archive.get("currentRoute"):
+    if not direct_playback and not checkpoint_repaired and updated.get("currentRoute") != archive.get("currentRoute"):
         raise EditorError("安全检查失败：成就路线试图改变当前播放路线")
     validate_archive(updated)
 
@@ -846,9 +897,12 @@ def plan_achievement_route(
         "name": spec["name"],
         "target": target,
         "launch": launch,
+        "playback": playback,
+        "direct_playback": direct_playback,
         "current_node": updated.get("currentNode", ""),
         "checkpoint_repaired": checkpoint_repaired,
         "summary": spec["summary"],
+        "choices": list(spec.get("choices", [])),
         "chapters": changed_chapters,
         "path_length": len(final_path),
         "values": values,

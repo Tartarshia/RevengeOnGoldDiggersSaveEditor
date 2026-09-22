@@ -130,8 +130,8 @@ class Editor(tk.Tk):
         ttk.Label(
             self.achievement_route_tab,
             text=(
-                "为容易被跨章选择锁住的结局准备可播放路线；不会直接授予 Steam 成就。"
-                "支持时会直接定位到结局前影片；播放结束后由游戏正常触发成就。"
+                "覆盖全部 39 项成就：剧情成就定位到触发影片，播放结束后由游戏授予；"
+                "没有剧情影片的 4 项功能型成就会明确标记并单项调用 Steam 解锁。"
             ),
             wraplength=1040,
             justify="left",
@@ -139,14 +139,14 @@ class Editor(tk.Tk):
         self.achievement_route_tree = self._tree(
             self.achievement_route_tab,
             ("status", "id", "name", "chapters", "launch", "condition"),
-            ("Steam", "ID", "成就", "可能调整章节", "安全起点", "路线条件"),
+            ("Steam", "ID", "成就", "可能调整章节", "触发方式", "说明"),
             (80, 65, 130, 125, 140, 570),
         )
         actions = ttk.Frame(self.achievement_route_tab)
         actions.pack(fill="x", pady=(8, 0))
         ttk.Button(
             actions,
-            text="准备选中成就路线",
+            text="处理选中成就",
             command=self.prepare_selected_achievement_route,
         ).pack(side="left")
         ttk.Button(
@@ -350,10 +350,17 @@ class Editor(tk.Tk):
         nodes = {node["id"]: node for _, node in all_story_nodes(self.story_graphs)} if self.story_graphs else {}
         for achievement_id, spec in ACHIEVEMENT_ROUTE_SPECS.items():
             achieved = self.achievement_status.get(achievement_id, False)
-            prep_chapters = list(dict.fromkeys(chapter for chapter, _, _ in spec["prep"]))
-            chapters = "第7章" + (f"；必要时 {','.join(prep_chapters)}" if prep_chapters else "")
-            launch = str(spec["launch"])
-            launch_label = nodes.get(launch, {}).get("label", launch)
+            if spec["mode"] == "steam":
+                chapters = "不修改存档"
+                launch_label = "Steam 单项解锁"
+            else:
+                prep_chapters = list(dict.fromkeys(chapter for chapter, _, _ in spec["prep"]))
+                chapters = f"第{spec['chapter']}章" + (
+                    f"；必要时 {','.join(prep_chapters)}" if prep_chapters else ""
+                )
+                playback = str(spec["playback"])
+                playback_label = nodes.get(playback, {}).get("label", playback)
+                launch_label = f"播放：{playback_label}"
             self.achievement_route_tree.insert(
                 "",
                 "end",
@@ -377,6 +384,16 @@ class Editor(tk.Tk):
             return
         achievement_id = selection[0]
         spec = ACHIEVEMENT_ROUTE_SPECS[achievement_id]
+        if spec["mode"] == "steam":
+            item = next(
+                (entry for entry in self.achievements if entry.achievement_id == achievement_id),
+                None,
+            )
+            if item is None:
+                messagebox.showerror("成就资料缺失", f"找不到 {achievement_id}", parent=self)
+                return
+            self.unlock_achievement(item)
+            return
         if is_game_running():
             messagebox.showerror("请关闭游戏", "请先完全关闭游戏，再准备成就路线。", parent=self)
             return
@@ -765,6 +782,9 @@ class Editor(tk.Tk):
         if item is None:
             messagebox.showinfo("请选择", "请先选择一项成就。", parent=self)
             return
+        self.unlock_achievement(item)
+
+    def unlock_achievement(self, item: Achievement) -> None:
         if self.achievement_status.get(item.achievement_id):
             messagebox.showinfo("已经获得", f"{item.name} 已经获得。", parent=self)
             return

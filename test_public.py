@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from rogd_model import EditorError, atomic_write, encode_json, load_json, sha256_bytes, validate_archive, validate_setting
+from steam_schema import load_achievements
 from story_graph import (
     ACHIEVEMENT_ROUTE_SPECS,
     all_story_nodes,
@@ -189,6 +190,13 @@ class StoryGraphTests(unittest.TestCase):
 
     def test_locked_achievement_route_presets_reach_their_endings(self) -> None:
         graphs = load_story_graphs()
+        achievements = {item.achievement_id: item for item in load_achievements()}
+        self.assertEqual(set(ACHIEVEMENT_ROUTE_SPECS), set(achievements))
+        self.assertEqual(len(ACHIEVEMENT_ROUTE_SPECS), 39)
+        self.assertEqual(
+            {key for key, spec in ACHIEVEMENT_ROUTE_SPECS.items() if spec["mode"] == "steam"},
+            {"a09", "a10", "a11", "a12"},
+        )
         base = {
             "majorMap": {},
             "nodeMap": {},
@@ -199,19 +207,28 @@ class StoryGraphTests(unittest.TestCase):
             base, *_ = plan_maximum_chapter_relationship_route(base, graphs, chapter)
         for achievement_id, spec in ACHIEVEMENT_ROUTE_SPECS.items():
             with self.subTest(achievement_id=achievement_id):
+                self.assertEqual(spec["name"], achievements[achievement_id].name)
+                if spec["mode"] == "steam":
+                    with self.assertRaises(EditorError):
+                        plan_achievement_route(base, graphs, achievement_id)
+                    continue
                 planned, info = plan_achievement_route(base, graphs, achievement_id)
                 playback = spec["playback"]
+                graph_edges = {
+                    (edge["source"], edge["target"])
+                    for edge in graphs[spec["chapter"]]["edges"]
+                }
+                self.assertIn((playback, spec["target"]), graph_edges)
                 self.assertEqual(planned["currentNode"], playback)
                 self.assertEqual(
                     planned["currentRoute"], planned["nodeMap"][playback]["lastRoute"]
                 )
                 self.assertEqual(planned["nodeMap"][playback]["lastNext"], spec["target"])
                 self.assertTrue(info["direct_playback"])
-                self.assertEqual(spec["launch"], "n1709")
                 self.assertIn(spec["launch"], planned["nodeMap"])
                 self.assertIn(spec["target"], planned["nodeMap"])
                 self.assertEqual(info["target"], spec["target"])
-                self.assertIn("7", info["chapters"])
+                self.assertIn(spec["chapter"], info["chapters"])
                 if achievement_id == "a31":
                     self.assertGreaterEqual(info["values"]["xx"], 4)
                 elif achievement_id == "a32":
@@ -230,10 +247,10 @@ class StoryGraphTests(unittest.TestCase):
                     self.assertIn("假意答应", "".join(info["choices"]))
                     self.assertIn("直接定位", info["summary"])
 
-        playback_nodes = {
-            spec["playback"] for spec in ACHIEVEMENT_ROUTE_SPECS.values()
-        }
-        self.assertEqual(len(playback_nodes), len(ACHIEVEMENT_ROUTE_SPECS))
+        story_specs = [
+            spec for spec in ACHIEVEMENT_ROUTE_SPECS.values() if spec["mode"] == "story"
+        ]
+        self.assertEqual(len(story_specs), 35)
 
     def test_achievement_route_replaces_v130_checkpoint_with_ending_playback(self) -> None:
         graphs = load_story_graphs()

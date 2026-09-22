@@ -35,12 +35,76 @@ CHAPTER_RELATIONSHIP_DEFAULTS = {
     "7": ("mn", "潘梦娜·终章"),
 }
 
-# Ending achievements that need a playable story route rather than a direct
-# Steam flag. prep entries are only applied when the current earlier chapters
-# cannot satisfy the seventh-chapter target as-is.
+# Story achievements are triggered by playing the scene immediately before
+# their terminal flag.  Meta achievements have no corresponding story scene
+# and are explicitly marked for direct Steam unlocking in the UI.
+_STORY_ACHIEVEMENT_ENDPOINTS = {
+    "a01": ("反捞有你", "1", "n1123", "n1123a1"),
+    "a02": ("愿得一人心", "1", "n1123", "n1123a1"),
+    "a03": ("以爱之名", "2", "n1230", "n1230a1"),
+    "a04": ("后来的新朋友", "3", "n1325", "n1325a1"),
+    "a05": ("再见爱人", "4", "n1441", "n1441a1"),
+    "a06": ("无妄之灾", "5", "n1539", "n1539a1"),
+    "a07": ("彷徨之梦", "6", "n1634", "n1634a1"),
+    "a08": ("猫鼠结局", "7", "n1730", "n1730a1"),
+    "a13": ("浅尝辄止", "1", "n1108a", "n1108a1"),
+    "a14": ("收刀入鞘", "1", "n1110a", "n1110a1"),
+    "a15": ("最后的温柔", "1", "n1116a", "n1116a1"),
+    "a16": ("说话算话", "1", "n1116c", "n1116c1"),
+    "a17": ("冷刃断情", "1", "n1119b", "n1119b1"),
+    "a18": ("清醒达人", "1", "n1121a", "n1121a1"),
+    "a19": ("二次被捞", "3", "n1323a", "n1323a1"),
+    "a20": ("终是错过", "3", "n1324a", "n1324a1"),
+    "a21": ("新的开始", "4", "n1439b", "n1439b1"),
+    "a22": ("身不由己", "5", "n1537a", "n1537a1"),
+    "a23": ("苦尽甘来", "5", "n1537b", "n1537b1"),
+    "a24": ("她的陪伴", "6", "n1604a", "n1604a1"),
+    "a25": ("她的守护", "6", "n1605b", "n1605b1"),
+    "a26": ("请君入瓮", "6", "n1633a", "n1633a1"),
+    "a27": ("功亏一篑", "7", "n1707", "n1707a1"),
+    "a28": ("绝处逢生", "7", "n1721", "n1721a1"),
+    "a29": ("迷离惝恍", "7", "n1723a", "n1723a1"),
+    "a30": ("一致对外", "7", "n1725a", "n1725a1"),
+    "a31": ("久别重逢", "7", "n1727a", "n1727a1"),
+    "a32": ("鱼死网破", "7", "n1727b", "n1727b1"),
+    "a33": ("天下无捞「现实中的完美结局」", "7", "n1730", "n1730a1"),
+    "a34": ("雾里看花", "7", "n1731", "n1731a1"),
+    "a35": ("弃暗投明", "7", "n1732", "n1732a1"),
+    "a36": ("重新出发", "7", "n1733", "n1733a1"),
+    "a37": ("一起断网", "7", "n1734", "n1734a1"),
+    "a38": ("圆满落幕", "7", "n1735a", "n1735a1"),
+    "a39": ("真爱至上", "7", "n1735b", "n1735b1"),
+}
+
 ACHIEVEMENT_ROUTE_SPECS = {
+    achievement_id: {
+        "name": name,
+        "mode": "story",
+        "chapter": chapter,
+        "target": target,
+        "launch": playback,
+        "playback": playback,
+        "prep": [],
+        "summary": f"直接定位到“{name}”触发影片，播放结束后由游戏授予成就",
+    }
+    for achievement_id, (name, chapter, playback, target)
+    in _STORY_ACHIEVEMENT_ENDPOINTS.items()
+}
+
+ACHIEVEMENT_ROUTE_SPECS.update({
+    "a09": {"name": "挑战真实", "mode": "steam", "summary": "功能型成就：直接调用 Steam 解锁"},
+    "a10": {"name": "一起变得更强", "mode": "steam", "summary": "在线留言板成就：直接调用 Steam 解锁"},
+    "a11": {"name": "保护自己", "mode": "steam", "summary": "恋情档案查看成就：直接调用 Steam 解锁"},
+    "a12": {"name": "提升自己", "mode": "steam", "summary": "恋情档案累计查看成就：直接调用 Steam 解锁"},
+})
+
+# Routes whose playback nodes require inherited values.  prep entries are
+# applied only if the current earlier chapters cannot satisfy the target.
+ACHIEVEMENT_ROUTE_SPECS.update({
     "a28": {
         "name": "绝处逢生",
+        "mode": "story",
+        "chapter": "7",
         "target": "n1721a1",
         "launch": "n1709",
         "playback": "n1721",
@@ -67,6 +131,8 @@ ACHIEVEMENT_ROUTE_SPECS = {
     },
     "a31": {
         "name": "久别重逢",
+        "mode": "story",
+        "chapter": "7",
         "target": "n1727a1",
         "launch": "n1709",
         "playback": "n1727a",
@@ -75,6 +141,8 @@ ACHIEVEMENT_ROUTE_SPECS = {
     },
     "a32": {
         "name": "鱼死网破",
+        "mode": "story",
+        "chapter": "7",
         "target": "n1727b1",
         "launch": "n1709",
         "playback": "n1727b",
@@ -83,6 +151,8 @@ ACHIEVEMENT_ROUTE_SPECS = {
     },
     "a36": {
         "name": "重新出发",
+        "mode": "story",
+        "chapter": "7",
         "target": "n1733a1",
         "launch": "n1709",
         "playback": "n1733",
@@ -91,6 +161,8 @@ ACHIEVEMENT_ROUTE_SPECS = {
     },
     "a37": {
         "name": "一起断网",
+        "mode": "story",
+        "chapter": "7",
         "target": "n1734a1",
         "launch": "n1709",
         "playback": "n1734",
@@ -99,13 +171,29 @@ ACHIEVEMENT_ROUTE_SPECS = {
     },
     "a39": {
         "name": "真爱至上",
+        "mode": "story",
+        "chapter": "7",
         "target": "n1735b1",
         "launch": "n1709",
         "playback": "n1735b",
         "prep": [("4", "xx", True), ("5", "xx", True), ("6", "xx", True)],
         "summary": "准备陈欣欣真爱前置及 xx>=10，直接定位到“真爱至上”影片",
     },
-}
+    "a35": {
+        **ACHIEVEMENT_ROUTE_SPECS["a35"],
+        "prep": [("2", "xt", True)],
+        "summary": "准备唐晓甜高沉沦前置，直接定位到“弃暗投明”影片",
+    },
+    "a38": {
+        **ACHIEVEMENT_ROUTE_SPECS["a38"],
+        "prep": [("4", "xx", False), ("5", "xx", False), ("6", "xx", False)],
+        "summary": "准备 xx<10 前置，直接定位到“圆满落幕”影片",
+    },
+})
+
+ACHIEVEMENT_ROUTE_SPECS = dict(
+    sorted(ACHIEVEMENT_ROUTE_SPECS.items(), key=lambda item: int(item[0][1:]))
+)
 
 # v1.3.0 incorrectly wrote these ordinary story nodes into currentNode.  They
 # are kept here only so a later route preparation can repair affected saves.
@@ -810,16 +898,21 @@ def plan_achievement_route(
     if achievement_id not in ACHIEVEMENT_ROUTE_SPECS:
         raise EditorError(f"成就 {achievement_id} 暂无剧情路线预设")
     spec = ACHIEVEMENT_ROUTE_SPECS[achievement_id]
+    if spec.get("mode") != "story":
+        raise EditorError(f"成就 {achievement_id} 是功能型成就，没有剧情影片")
     updated = copy.deepcopy(archive)
     changed_chapters: list[str] = []
+    story_chapter = str(spec["chapter"])
+    story_target = str(spec["target"])
+    story_playback = str(spec["playback"])
 
     def plan_final(current: dict[str, Any]) -> tuple[dict[str, Any], list[str], int]:
         prescribed_path = spec.get("path")
         if prescribed_path:
-            planned, _ = plan_chapter_unlock(current, graphs, "7")
+            planned, _ = plan_chapter_unlock(current, graphs, story_chapter)
             planned = _rewrite_selected_route(planned, graphs, list(prescribed_path))
             for node_id in prescribed_path:
-                requirement = _node_index(graphs["7"])[node_id].get("requirement") or ""
+                requirement = _node_index(graphs[story_chapter])[node_id].get("requirement") or ""
                 if requirement:
                     _, satisfied = relationship_requirement_status(planned, graphs, node_id)
                     if not satisfied:
@@ -828,16 +921,25 @@ def plan_achievement_route(
                             "请先准备第六章高沉沦路线"
                         )
             score = story_route_values(
-                planned, graphs, str(spec["target"]), ["mn"]
+                planned, graphs, story_target, ["mn"]
             )["mn"]
             return planned, list(prescribed_path), score
-        return plan_maximum_relationship_route(
-            current,
-            graphs,
-            "7",
-            "mn",
-            str(spec["target"]),
+
+        playback_requirement = (
+            _node_index(graphs[story_chapter])[story_playback].get("requirement") or ""
         )
+        if relationship_fields(playback_requirement):
+            planned, path, _ = plan_relationship_gate_route(
+                current, graphs, story_playback
+            )
+            path = path + [story_target]
+            planned = _rewrite_selected_route(planned, graphs, path)
+            return planned, path, 0
+
+        planned, _ = plan_chapter_unlock(current, graphs, story_chapter)
+        path = _shortest_path(graphs[story_chapter], story_target)
+        planned = _rewrite_selected_route(planned, graphs, path)
+        return planned, path, 0
 
     try:
         updated, final_path, _ = plan_final(updated)
@@ -857,8 +959,8 @@ def plan_achievement_route(
             changed_chapters.append(chapter)
         updated, final_path, _ = plan_final(updated)
 
-    if "7" not in changed_chapters:
-        changed_chapters.append("7")
+    if story_chapter not in changed_chapters:
+        changed_chapters.append(story_chapter)
     launch = str(spec["launch"])
     if launch not in final_path:
         raise EditorError(f"成就路线没有经过推荐入口 {launch}")
@@ -895,7 +997,7 @@ def plan_achievement_route(
         raise EditorError("安全检查失败：成就路线试图改变当前播放路线")
     validate_archive(updated)
 
-    target = str(spec["target"])
+    target = story_target
     values = story_route_values(updated, graphs, target, ["mn", "xx", "xt", "yy", "sq"])
     return updated, {
         "achievement_id": achievement_id,

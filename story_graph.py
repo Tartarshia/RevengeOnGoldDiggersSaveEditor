@@ -35,6 +35,54 @@ CHAPTER_RELATIONSHIP_DEFAULTS = {
     "7": ("mn", "潘梦娜·终章"),
 }
 
+# Ending achievements that need a playable story route rather than a direct
+# Steam flag. prep entries are only applied when the current earlier chapters
+# cannot satisfy the seventh-chapter target as-is.
+ACHIEVEMENT_ROUTE_SPECS = {
+    "a28": {
+        "name": "绝处逢生",
+        "target": "n1721a1",
+        "launch": "n1718",
+        "prep": [],
+        "summary": "从“尝试求婚”进入月盈救援结局",
+    },
+    "a31": {
+        "name": "久别重逢",
+        "target": "n1727a1",
+        "launch": "n1726",
+        "prep": [("4", "xx", True), ("5", "xx", True), ("6", "xx", True)],
+        "summary": "梦娜低沉沦，且陈欣欣真爱值 xx>=4",
+    },
+    "a32": {
+        "name": "鱼死网破",
+        "target": "n1727b1",
+        "launch": "n1726",
+        "prep": [("4", "xx", False), ("5", "xx", False), ("6", "xx", False)],
+        "summary": "梦娜低沉沦，且陈欣欣真爱值 xx<4",
+    },
+    "a36": {
+        "name": "重新出发",
+        "target": "n1733a1",
+        "launch": "n1729",
+        "prep": [("5", "yy", True)],
+        "summary": "完成何月盈真爱前置，且 yy>=180",
+    },
+    "a37": {
+        "name": "一起断网",
+        "target": "n1734a1",
+        "launch": "n1729",
+        "prep": [("4", "sq", True)],
+        "summary": "完成宋诗琪惩罚前置，且 sq>=110",
+    },
+    "a39": {
+        "name": "真爱至上",
+        "target": "n1735b1",
+        "launch": "n1729",
+        "prep": [("4", "xx", True), ("5", "xx", True), ("6", "xx", True)],
+        "summary": "进入陈欣欣真爱结局，且 xx>=10",
+    },
+}
+
 
 def load_story_graphs(path: Path = STORY_GRAPHS_PATH) -> dict[str, dict[str, Any]]:
     if not path.is_file():
@@ -599,6 +647,7 @@ def _maximum_valid_score_path(
     chapter: str,
     target: str,
     primary_field: str,
+    maximize: bool = True,
 ) -> tuple[list[str], int]:
     graph = graphs[chapter]
     nodes = _node_index(graph)
@@ -642,10 +691,18 @@ def _maximum_valid_score_path(
     if not states.get(target):
         raise EditorError(f"在当前前章数值下，找不到抵达 {target} 的合法最高值路线")
     primary_index = fields.index(primary_field)
-    values, path = max(
-        states[target].items(),
-        key=lambda item: (item[0][primary_index], sum(item[0]), -len(item[1])),
-    )
+    if maximize:
+        values, path = max(
+            states[target].items(),
+            key=lambda item: (item[0][primary_index], sum(item[0]), -len(item[1])),
+        )
+    else:
+        # Minimize the requested field, but retain the strongest remaining
+        # relationship totals so later gates (notably mn>=135) stay reachable.
+        values, path = min(
+            states[target].items(),
+            key=lambda item: (item[0][primary_index], -sum(item[0]), len(item[1])),
+        )
     return path, values[primary_index]
 
 
@@ -655,6 +712,8 @@ def plan_maximum_relationship_route(
     chapter: str,
     field: str,
     target: str,
+    *,
+    maximize: bool = True,
 ) -> tuple[dict[str, Any], list[str], int]:
     validate_archive(archive)
     if chapter not in graphs:
@@ -675,13 +734,15 @@ def plan_maximum_relationship_route(
     updated, _ = plan_chapter_unlock(archive, graphs, chapter)
     updated["nodeMap"].update(copy.deepcopy(protected_nodes))
     updated["majorMap"].update(copy.deepcopy(protected_majors))
-    path, score = _maximum_valid_score_path(updated, graphs, chapter, target, field)
+    path, score = _maximum_valid_score_path(
+        updated, graphs, chapter, target, field, maximize=maximize
+    )
     updated = _rewrite_selected_route(updated, graphs, path)
 
     if any(updated["nodeMap"].get(key) != value for key, value in protected_nodes.items()):
-        raise EditorError("安全检查失败：最高值路线试图修改其他章节节点")
+        raise EditorError("安全检查失败：关系路线试图修改其他章节节点")
     if any(updated["majorMap"].get(key) != value for key, value in protected_majors.items()):
-        raise EditorError("安全检查失败：最高值路线试图修改其他章节索引")
+        raise EditorError("安全检查失败：关系路线试图修改其他章节索引")
 
     validate_archive(updated)
     if story_route_values(updated, graphs, target, [field])[field] != score:
@@ -710,3 +771,68 @@ def plan_maximum_chapter_relationship_route(
     )
     after = story_route_values(updated, graphs, target, [field])[field]
     return updated, path, field, before, after
+
+
+def plan_achievement_route(
+    archive: dict[str, Any],
+    graphs: dict[str, dict[str, Any]],
+    achievement_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Prepare a playable route for one ending achievement without unlocking it."""
+    if achievement_id not in ACHIEVEMENT_ROUTE_SPECS:
+        raise EditorError(f"成就 {achievement_id} 暂无剧情路线预设")
+    spec = ACHIEVEMENT_ROUTE_SPECS[achievement_id]
+    updated = copy.deepcopy(archive)
+    changed_chapters: list[str] = []
+
+    def plan_final(current: dict[str, Any]) -> tuple[dict[str, Any], list[str], int]:
+        return plan_maximum_relationship_route(
+            current,
+            graphs,
+            "7",
+            "mn",
+            str(spec["target"]),
+        )
+
+    try:
+        updated, final_path, _ = plan_final(updated)
+    except EditorError as initial_error:
+        if not spec["prep"]:
+            raise initial_error
+        for chapter, field, maximize in spec["prep"]:
+            target = _chapter_completion(graphs[chapter])
+            updated, _, _ = plan_maximum_relationship_route(
+                updated,
+                graphs,
+                chapter,
+                field,
+                target,
+                maximize=maximize,
+            )
+            changed_chapters.append(chapter)
+        updated, final_path, _ = plan_final(updated)
+
+    if "7" not in changed_chapters:
+        changed_chapters.append("7")
+    launch = str(spec["launch"])
+    if launch not in final_path:
+        raise EditorError(f"成就路线没有经过推荐入口 {launch}")
+    launch_record = updated["nodeMap"].get(launch)
+    if not isinstance(launch_record, dict):
+        raise EditorError(f"成就入口 {launch} 未写入存档")
+    updated["currentNode"] = launch
+    updated["currentRoute"] = copy.deepcopy(launch_record.get("lastRoute", {"nodes": [launch]}))
+    validate_archive(updated)
+
+    target = str(spec["target"])
+    values = story_route_values(updated, graphs, target, ["mn", "xx", "xt", "yy", "sq"])
+    return updated, {
+        "achievement_id": achievement_id,
+        "name": spec["name"],
+        "target": target,
+        "launch": launch,
+        "summary": spec["summary"],
+        "chapters": changed_chapters,
+        "path_length": len(final_path),
+        "values": values,
+    }

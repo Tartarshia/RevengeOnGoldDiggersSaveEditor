@@ -24,11 +24,13 @@ from rogd_model import (
 )
 from steam_schema import Achievement, load_achievements
 from story_graph import (
+    ACHIEVEMENT_ROUTE_SPECS,
     CHAPTER_RELATIONSHIP_DEFAULTS,
     RELATIONSHIP_CHARACTERS,
     all_story_nodes,
     chapter_unlock_status,
     load_story_graphs,
+    plan_achievement_route,
     plan_chapter_unlock,
     plan_maximum_chapter_relationship_route,
     plan_maximum_relationship_route,
@@ -73,16 +75,19 @@ class Editor(tk.Tk):
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True, padx=10)
         self.achievement_tab = ttk.Frame(notebook, padding=8)
+        self.achievement_route_tab = ttk.Frame(notebook, padding=8)
         self.collect_tab = ttk.Frame(notebook, padding=8)
         self.route_tab = ttk.Frame(notebook, padding=8)
         self.relationship_tab = ttk.Frame(notebook, padding=8)
         self.log_tab = ttk.Frame(notebook, padding=8)
         notebook.add(self.achievement_tab, text="Steam 成就")
+        notebook.add(self.achievement_route_tab, text="成就路线")
         notebook.add(self.collect_tab, text="档案 / 差分")
         notebook.add(self.route_tab, text="剧情路线")
         notebook.add(self.relationship_tab, text="隐藏数值 / 结局")
         notebook.add(self.log_tab, text="操作日志")
         self._build_achievement_tab()
+        self._build_achievement_route_tab()
         self._build_collect_tab()
         self._build_route_tab()
         self._build_relationship_tab()
@@ -120,6 +125,35 @@ class Editor(tk.Tk):
         actions.pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="刷新 Steam 状态", command=self.refresh_achievements).pack(side="left")
         ttk.Button(actions, text="解锁选中成就", command=self.unlock_selected_achievement).pack(side="left", padx=8)
+
+    def _build_achievement_route_tab(self):
+        ttk.Label(
+            self.achievement_route_tab,
+            text=(
+                "为容易被跨章选择锁住的结局准备可播放路线；不会直接授予 Steam 成就。"
+                "写入后从推荐入口继续播放，待结局正常触发后成就才会获得。"
+            ),
+            wraplength=1040,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self.achievement_route_tree = self._tree(
+            self.achievement_route_tab,
+            ("status", "id", "name", "chapters", "launch", "condition"),
+            ("Steam", "ID", "成就", "可能调整章节", "推荐入口", "路线条件"),
+            (80, 65, 130, 125, 140, 570),
+        )
+        actions = ttk.Frame(self.achievement_route_tab)
+        actions.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            actions,
+            text="准备选中成就路线",
+            command=self.prepare_selected_achievement_route,
+        ).pack(side="left")
+        ttk.Button(
+            actions,
+            text="刷新 Steam 状态",
+            command=self.refresh_achievements,
+        ).pack(side="left", padx=8)
 
     def _build_collect_tab(self):
         ttk.Label(
@@ -302,11 +336,95 @@ class Editor(tk.Tk):
                     tags=("achieved" if achieved else "missing",),
                 )
             self.achievement_tree.tag_configure("achieved", foreground="#277a35")
+            self.refresh_achievement_routes()
             count = sum(self.achievement_status.values())
             self.log(f"Steam 成就状态：{count}/{len(self.achievements)}")
         except Exception as exc:
             self.log(f"读取 Steam 成就失败：{exc}")
             messagebox.showerror("Steam 状态读取失败", str(exc), parent=self)
+
+    def refresh_achievement_routes(self) -> None:
+        if not hasattr(self, "achievement_route_tree"):
+            return
+        self.achievement_route_tree.delete(*self.achievement_route_tree.get_children())
+        nodes = {node["id"]: node for _, node in all_story_nodes(self.story_graphs)} if self.story_graphs else {}
+        for achievement_id, spec in ACHIEVEMENT_ROUTE_SPECS.items():
+            achieved = self.achievement_status.get(achievement_id, False)
+            prep_chapters = list(dict.fromkeys(chapter for chapter, _, _ in spec["prep"]))
+            chapters = "第7章" + (f"；必要时 {','.join(prep_chapters)}" if prep_chapters else "")
+            launch = str(spec["launch"])
+            launch_label = nodes.get(launch, {}).get("label", launch)
+            self.achievement_route_tree.insert(
+                "",
+                "end",
+                iid=achievement_id,
+                values=(
+                    "已获得" if achieved else "未获得",
+                    achievement_id,
+                    spec["name"],
+                    chapters,
+                    launch_label,
+                    spec["summary"],
+                ),
+                tags=("achieved" if achieved else "missing",),
+            )
+        self.achievement_route_tree.tag_configure("achieved", foreground="#277a35")
+
+    def prepare_selected_achievement_route(self) -> None:
+        selection = self.achievement_route_tree.selection()
+        if not selection:
+            messagebox.showinfo("请选择", "请先选择一个剧情成就。", parent=self)
+            return
+        achievement_id = selection[0]
+        spec = ACHIEVEMENT_ROUTE_SPECS[achievement_id]
+        if is_game_running():
+            messagebox.showerror("请关闭游戏", "请先完全关闭游戏，再准备成就路线。", parent=self)
+            return
+        try:
+            updated, info = plan_achievement_route(
+                self.archive, self.story_graphs, achievement_id
+            )
+        except Exception as exc:
+            messagebox.showerror("无法规划成就路线", str(exc), parent=self)
+            return
+        values_text = "，".join(
+            f"{key}={value}" for key, value in info["values"].items()
+            if value != 0
+        )
+        chapters_text = "、".join(f"第 {chapter} 章" for chapter in info["chapters"])
+        prompt = (
+            f"准备成就路线：{achievement_id} {spec['name']}？\n\n"
+            f"路线条件：{spec['summary']}\n"
+            f"实际调整：{chapters_text}\n"
+            f"写入后入口：{info['launch']}\n"
+            f"路线复算：{values_text}\n\n"
+            "这不会直接解锁 Steam 成就；必须启动游戏并播放到结局。"
+            "写入前会备份，且只修改为该成就确实需要的章节。"
+        )
+        if not messagebox.askyesno("确认成就路线", prompt, parent=self):
+            return
+        try:
+            backup_dir, digest = save_archive(self.paths, updated)
+            self.archive = load_json(self.paths.archive)
+            validate_archive(self.archive)
+            if self.archive.get("currentNode") != info["launch"]:
+                raise EditorError("写入复读后没有停在推荐成就入口。")
+            self.refresh_routes()
+            self.refresh_relationships()
+            self.log(
+                f"成就路线 {achievement_id} {spec['name']} 已准备；"
+                f"入口 {info['launch']}；调整 {chapters_text}；"
+                f"备份 {backup_dir.name}；SHA-256 {digest[:16]}…"
+            )
+            messagebox.showinfo(
+                "成就路线已准备",
+                f"请启动游戏，从 {info['launch']} 继续播放至“{spec['name']}”结局。\n"
+                f"Steam 成就会由游戏正常触发。\n备份：{backup_dir}",
+                parent=self,
+            )
+        except Exception as exc:
+            self.log(f"成就路线 {achievement_id} 写入失败：{exc}")
+            messagebox.showerror("成就路线写入失败", str(exc), parent=self)
 
     def refresh_collectibles(self) -> None:
         self.collect_tree.delete(*self.collect_tree.get_children())

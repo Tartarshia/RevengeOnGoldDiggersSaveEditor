@@ -10,10 +10,12 @@ from pathlib import Path
 
 from rogd_model import EditorError, atomic_write, encode_json, load_json, sha256_bytes, validate_archive, validate_setting
 from story_graph import (
+    ACHIEVEMENT_ROUTE_SPECS,
     all_story_nodes,
     chapter_unlock_status,
     load_story_graphs,
     plan_chapter_unlock,
+    plan_achievement_route,
     plan_maximum_chapter_relationship_route,
     plan_maximum_relationship_route,
     plan_relationship_gate_route,
@@ -184,6 +186,34 @@ class StoryGraphTests(unittest.TestCase):
         self.assertGreater(after, 250)
         _, satisfied = relationship_requirement_status(planned, graphs, "n1537b")
         self.assertTrue(satisfied)
+
+    def test_locked_achievement_route_presets_reach_their_endings(self) -> None:
+        graphs = load_story_graphs()
+        base = {
+            "majorMap": {},
+            "nodeMap": {},
+            "currentNode": "preserve-me",
+            "currentRoute": {"nodes": ["preserve-route"]},
+        }
+        for chapter in map(str, range(1, 8)):
+            base, *_ = plan_maximum_chapter_relationship_route(base, graphs, chapter)
+        for achievement_id, spec in ACHIEVEMENT_ROUTE_SPECS.items():
+            with self.subTest(achievement_id=achievement_id):
+                planned, info = plan_achievement_route(base, graphs, achievement_id)
+                self.assertEqual(planned["currentNode"], spec["launch"])
+                self.assertIn(spec["target"], planned["nodeMap"])
+                self.assertEqual(info["target"], spec["target"])
+                self.assertIn("7", info["chapters"])
+                if achievement_id == "a31":
+                    self.assertGreaterEqual(info["values"]["xx"], 4)
+                elif achievement_id == "a32":
+                    self.assertLess(info["values"]["xx"], 4)
+                elif achievement_id == "a36":
+                    self.assertGreaterEqual(info["values"]["yy"], 180)
+                elif achievement_id == "a37":
+                    self.assertGreaterEqual(info["values"]["sq"], 110)
+                elif achievement_id == "a39":
+                    self.assertGreaterEqual(info["values"]["xx"], 10)
 
 
 class SteamHelperTests(unittest.TestCase):

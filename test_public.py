@@ -200,16 +200,13 @@ class StoryGraphTests(unittest.TestCase):
         for achievement_id, spec in ACHIEVEMENT_ROUTE_SPECS.items():
             with self.subTest(achievement_id=achievement_id):
                 planned, info = plan_achievement_route(base, graphs, achievement_id)
-                if achievement_id == "a28":
-                    self.assertEqual(planned["currentNode"], "n1721")
-                    self.assertEqual(
-                        planned["currentRoute"], planned["nodeMap"]["n1721"]["lastRoute"]
-                    )
-                    self.assertTrue(info["direct_playback"])
-                else:
-                    self.assertEqual(planned["currentNode"], base["currentNode"])
-                    self.assertEqual(planned["currentRoute"], base["currentRoute"])
-                    self.assertEqual(info["current_node"], base["currentNode"])
+                playback = spec["playback"]
+                self.assertEqual(planned["currentNode"], playback)
+                self.assertEqual(
+                    planned["currentRoute"], planned["nodeMap"][playback]["lastRoute"]
+                )
+                self.assertEqual(planned["nodeMap"][playback]["lastNext"], spec["target"])
+                self.assertTrue(info["direct_playback"])
                 self.assertEqual(spec["launch"], "n1709")
                 self.assertIn(spec["launch"], planned["nodeMap"])
                 self.assertIn(spec["target"], planned["nodeMap"])
@@ -232,6 +229,11 @@ class StoryGraphTests(unittest.TestCase):
                     self.assertEqual(planned["nodeMap"]["n1718"]["lastNext"], "n1718a")
                     self.assertIn("假意答应", "".join(info["choices"]))
                     self.assertIn("直接定位", info["summary"])
+
+        playback_nodes = {
+            spec["playback"] for spec in ACHIEVEMENT_ROUTE_SPECS.values()
+        }
+        self.assertEqual(len(playback_nodes), len(ACHIEVEMENT_ROUTE_SPECS))
 
     def test_achievement_route_replaces_v130_checkpoint_with_ending_playback(self) -> None:
         graphs = load_story_graphs()
